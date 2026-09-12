@@ -1,0 +1,6 @@
+<
+About = "STMG 演示剧本 —— 用来验证引擎的各个功能点。作者：ciallo0721-cmd"
+Enc = "stmg-demo-key-please-change-me"
+dec = "*.stm,*.png,*.jpg,*.mp3,*.wav,*.ogg"
+AllowNet = "true"
+>

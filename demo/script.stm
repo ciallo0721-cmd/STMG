@@ -1,0 +1,80 @@
+<
+Size=1280x720
+title="STMG 演示剧本"
+Ver="1.0.0"
+Pack="com.ciallo.stmg.demo"
+Lang="cn"
+Font="SIMHEI"
+>
+<
+Start:
+<-- 注册角色。名字里不带图片路径 = 定义角色 -->
+S.character("塔菲")
+S.character("旁白君")
+
+S.cg("bg/room.png")
+S.play("music/bgm.mp3")
+
+"这是一个用 STMG 写的演示剧本，能跑通就说明引擎没坏。"
+
+塔菲"关注永雏塔菲谢谢喵！"
+
+STM.display("素材加载完毕（缺的图会自动画占位块）")
+
+<-- 变量：必须在 SET 里第一次出现 -->
+SET 好感度 = 0
+
+"你面前的桌上放着一张纸条。"
+
+Choose:
+    "读纸条":"先睡一觉"
+
+If "读纸条":
+    S.sound("music/paper.wav")
+    S.picture("png/note.png")
+    "纸条上写着：**今天之内要搞定这个引擎**。"
+    SET 好感度 = 好感度 + 10
+    塔菲"所、所以你是来验收的？那我就勉为其难地写一下好了。"
+
+If "先睡一觉":
+    S.cg("bg/dark.png")
+    "你睡了一觉，醒来天都黑了。"
+    SET 好感度 = 好感度 - 5
+    塔菲"喂！[color=#ff88bb]睡什么睡[/color]！"
+EndIf
+
+S.hide("picture")
+
+"她凑过来看了一眼屏幕。"
+
+<-- 询问框的提示文字：写在这里（STM.Q），也可以缩进写在 Question: 下面 -->
+STM.Q = "请问你叫什么名字？"
+Question:
+
+"原来叫 [color=#7fb3ff]**" + STM.ANSWER + "**[/color] 啊。"
+
+If 好感度 >= 10:
+    塔菲"嗯……勉强算个及格的测试员吧。"
+Else:
+    塔菲"你这个人，不太行呐。"
+
+"她掏出了游标卡尺。"
+
+塔菲"来，{ruby:测测|はか}你的~~诚意~~深度。"
+
+S.voice("music/voice001.wav")
+S.character("png/taffy.png")
+塔菲"站好别动！"
+
+<-- 联网那一段只在选了「先睡一觉」的分支里跑，平时测试不会卡网络 -->
+If "先睡一觉":
+    R.api(url="api.example.com/ping", key=option)
+    "（上面这条是 R.api 的用法示范）"
+
+S.stop("all")
+S.cg("")
+S.hide("all")
+>
+<
+"感谢游玩"
+>

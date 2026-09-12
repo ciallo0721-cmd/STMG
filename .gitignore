@@ -10,8 +10,11 @@ build/
 
 # 运行期数据
 .stmg_save/
-projects/_trash/
 .stmg_launcher.json
+
+# 自己的项目不进仓库（只留一个占位文件保住空目录）
+projects/*
+!projects/.gitkeep
 
 # 编辑器
 .vscode/

@@ -1,179 +1,233 @@
-# STMG — Super Text Markdown Galgame
+# STMG
 
-一个用 Python + pygame 写的最小可用视觉小说引擎。
-语法、UI、目录结构来自你的设计稿《Super Text Markdown Galgame language》，
-实现里凡是设计稿没写死的地方，都在下面 **§4 补充约定** 里单独标了出来。
+**Super Text Markdown Galgame** —— 用 Markdown 风格的语法写视觉小说。
 
-当前状态：**能跑通全流程**（解析 → 剧情推进 → 界面 → 存读档 → 加密发布）。
-自检 33 项全过。
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
+[![pygame](https://img.shields.io/badge/dependency-pygame-green)](https://www.pygame.org/)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+写起来大概长这样：
+
+```stm
+<
+Size=1280x720
+title="我的第一个游戏"
+Font="Microsoft YaHei"
+>
+<
+Start:
+S.character("角色1")
+S.cg("bg/room.png")
+S.play("music/bgm.mp3")
+
+"桌上放着一张纸条。"
+角色1"你好，世界。"
+
+SET 好感度 = 0
+
+Choose:
+    "读纸条":"先睡一觉"
+
+If "读纸条":
+    S.picture("png/note.png")
+    "纸条上写着：**今天之内要搞定这个引擎**。"
+    SET 好感度 = 好感度 + 10
+
+STM.Q = "请给自己取个名字："
+Question:
+
+"你好，[color=#ff88bb]**" + STM.ANSWER + "**[/color]。"
+>
+<
+"感谢游玩"
+>
+```
+
+缩进就是分支，`**粗体**` 直接写在台词里，选择支和条件判断各占一行。
 
 ---
 
-## 0. 从零开始（clone 下来怎么跑）
+## 目录
 
-只要你机器上装了 Python 3.9+：
+- [特性](#特性)
+- [快速开始](#快速开始)
+- [语法速查](#语法速查)
+- [完整语法手册](#完整语法手册)
+- [项目结构](#项目结构)
+- [命令行工具](#命令行工具)
+- [打包发布](#打包发布)
+- [关于加密](#关于加密重要)
+- [已知限制](#已知限制)
+- [常见问题](#常见问题)
+- [许可](#许可)
 
-```bat
+---
+
+## 特性
+
+- **Markdown 风味语法** —— 缩进即分支，注释、内联标记都按 Markdown 的习惯来，写剧本像写笔记
+- **剧本与引擎分离** —— 引擎代码是干净的 Python 包，改剧本不需要碰它
+- **多立绘 + 站位** —— 可以同时站好几张立绘，用 `pos=` 和 `tag=` 控制位置和身份
+- **三通道音频** —— BGM / 音效 / 语音各自独立音量，音效不会打断 BGM
+- **md 内联渲染** —— 加粗、斜体、删除线、颜色、字号、注音，文本框里直接生效
+- **完整 galgame 体验件** —— 存档读档、历史回顾、自动播放、快进、打字机、设置界面
+- **带语法检查器** —— `--check` 逐行报错，五级错误分级，写错了不用开着窗口试
+- **加密发布** —— 一键把剧本和素材打包成 `.stmdec`，纯标准库实现，零额外依赖
+- **缺素材不崩** —— 图还没画好也能跑，引擎会自动画占位块
+- **图形化启动器** —— 项目管理、新建模板、检查、试跑、打包，点点鼠标就行
+
+---
+
+## 快速开始
+
+需要 Python 3.8 或更高版本。
+
+```bash
 git clone https://github.com/ciallo0721-cmd/STMG.git
 cd STMG
 python -m venv .venv
+```
+
+Windows：
+
+```bat
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 STMG启动器.bat
 ```
 
-只有 pygame 一个依赖。启动器用的是标准库的 tkinter，Windows/macOS 自带，
-Linux 上如果没装：`sudo apt install python3-tk`。
+macOS / Linux：
 
----
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python launcher.py
+```
 
-## 1. 快速开始
+Linux 上如果提示缺 `tkinter`，装一下：`sudo apt install python3-tk`。
 
-本机已经建好环境了（虚拟环境在 `STMG/.venv`，装在 G 盘，没碰 C 盘）。
+### 用启动器
 
-### 用启动器（推荐）
+左边是项目列表，右边是操作按钮：
+
+| 按钮 | 作用 |
+|---|---|
+| 启动游戏 | 开窗口跑当前项目 |
+| 语法检查 | 逐行检查剧本，输出打在下面的日志区 |
+| 无头试跑 | 不开窗口，自动选第一个选项跑一遍，打印全部台词 |
+| 打包发布 | 生成加密的发布版到 `dist/` |
+| 编辑剧本 | 用系统默认编辑器打开 `script.stm` |
+| 打开文件夹 | 打开项目目录 |
+
+第一次用点「**新建项目**」，会生成一份能直接跑的模板（自带变量、选择支、询问输入的示例）。
+
+> 「移除项目」不会删文件，只会把整个文件夹挪到 `projects/_trash/`，随时可以拖回来。
+
+### 不用启动器
 
 ```bat
-:: 双击这个，或者
-STMG启动器.bat
-```
-
-启动器是**普通 Python + tkinter** 写的（标准库自带，不用装东西）。
-左边选项目，右边点按钮：**启动游戏 / 语法检查 / 无头试跑 / 打包发布 / 编辑剧本 / 打开文件夹**。
-
-第一次用点「新建项目」，会生成一份能直接跑的模板：
-
-```
-projects\<你的项目>\
-├── script.stm      主剧本（模板里已经带了变量、选择支、询问的示例）
-├── options.stm     标题 / 加密口令 / 打包规则
-├── README.md
-├── bg\   背景图
-├── png\  立绘、贴图
-├── music\  BGM / 音效 / 语音
-└── gui\  文本框、按钮图片（不放就用默认样式）
-```
-
-> 为什么不像 Ren'Py 那样用剧本语言自举启动器？
-> 启动器要处理原生文件对话框、子进程、滚动列表这些活，用剧本语言反而要造一堆轮子。
-> 用 tkinter 写更短、更稳，出问题也更好查。引擎本身还是 pygame。
-
-### 命令行（不开启动器）
-
-```bat
-:: 无参数 -> 打开启动器；带参数 -> 直接跑剧本
-start.bat
-start.bat demo\script.stm
+start.bat                           :: 无参数 = 打开启动器
+start.bat demo\script.stm           :: 直接跑指定剧本
 start.bat projects\我的游戏\script.stm
+
+:: 或者直接用 Python
+.venv\Scripts\python.exe start.py demo\script.stm
+.venv\Scripts\python.exe start.py --check demo\script.stm    :: 只检查语法
+.venv\Scripts\python.exe start.py --auto  demo\script.stm    :: 无头跑一遍
+.venv\Scripts\python.exe start.py --auto=1 demo\script.stm   :: 自动选第二个选项
 ```
 
-手动命令（CMD）：
+### 操作
 
-```bat
-cd /d "G:\workbuddymoren\2026-09-11-21-08-11\STMG"
-.venv\Scripts\python.exe start.py                    :: 跑 demo，开窗口
-.venv\Scripts\python.exe start.py 我的游戏\script.stm  :: 跑自己的剧本
-.venv\Scripts\python.exe start.py --check demo\script.stm   :: 只看语法，不开窗
-.venv\Scripts\python.exe start.py --auto demo\script.stm    :: 无头跑一遍，打印所有台词
-.venv\Scripts\python.exe start.py --auto=1 demo\script.stm  :: 自动选第二个选项
-.venv\Scripts\python.exe start.py --release demo\script.stm :: 按发布版规则跑
-```
+| 操作 | 按键 |
+|---|---|
+| 推进 | 鼠标左键 / `空格` / `回车` |
+| 历史记录 | 滚轮上翻 / `H` |
+| 自动播放 | `A` |
+| 快进 | 按住 `Ctrl` |
+| 存档 / 读档 | `F5` / `F9` |
+| 全屏 | `F11` |
+| 菜单（音量、文字速度、存读档） | `Esc` |
 
-改完剧本的推荐流程：**先 `--check` → 再开窗口**。
-
-### 自检 / 打包
-
-```bat
-.venv\Scripts\python.exe tools\selftest.py            :: 23 项自检
-.venv\Scripts\python.exe tools\check.py demo --verbose  :: 语法检查 + 语句树
-.venv\Scripts\python.exe stmenc\start.py demo          :: 加密打包到 dist\demo
-dist\demo\start.bat                                     :: 试跑发布版
-```
+> `demo/` 是故意不放素材的示例，跑来跑去都是占位块——那是正常的，不是 bug。
 
 ---
 
-## 2. 目录结构
+## 语法速查
 
-```
-STMG/
-├── launcher.py              启动器（tkinter）
-├── STMG启动器.bat           双击打开启动器
-├── start.py / start.bat     剧本启动器：跑一个 script.stm
-├── projects/                你的项目都放这
-├── .venv/                   虚拟环境（pygame 在这）
-├── stmg/                    ★ 引擎核心，剧本作者不用改这里
-│   ├── errors.py            五级错误体系
-│   ├── parser.py            .stm → 语句树
-│   ├── markdown.py          md 内联标记 → run 列表
-│   ├── runtime.py           语句树 → 事件流（生成器）
-│   ├── session.py           推进器：当前显示什么 / 点了以后变什么 / 存读档
-│   ├── gui.py               pygame 主界面
-│   ├── render.py            排版、文本框、立绘、占位块
-│   ├── audio.py             BGM / SE / Voice 三通道
-│   ├── options.py           options.stm 解析
-│   ├── save.py              存档槽读写
-│   ├── crypto.py            .stmdec 加解密
-│   ├── pack.py              发布版资源容器
-│   ├── project.py           项目的发现 / 新建 / 移除
-│   └── stdlib_api.py        STM.python 白名单 + R.api 联网
-├── stmenc/start.py          加密打包器（设计稿里的 STMENC）
-├── tools/check.py           语法检查器
-├── tools/selftest.py        自检
-├── demo/                    示例游戏（故意不放素材，验证占位块）
-└── dist/demo/               已经打好的发布版，双击 start.bat 就能玩
-```
+| 写法 | 意思 |
+|---|---|
+| `"台词"` | 旁白（不显示名字框） |
+| `角色1"台词"` / `角色1: "台词"` | 让「角色1」说话 |
+| `<-- 注释 -->` | 注释 |
+| `S.character("角色1")` | 注册角色 |
+| `S.character("png/立绘.png")` | 显示立绘 |
+| `S.character("png/立绘.png", pos="left", tag="角色1")` | 显示立绘并指定站位和身份 |
+| `S.hide("角色1")` | 让指定立绘退场 |
+| `S.cg("bg/教室.png")` | 换背景（会清空所有立绘） |
+| `S.picture("png/纸条.png")` | 背景之上叠一张图 |
+| `S.play("music/bgm.mp3")` | 播放 BGM（默认循环） |
+| `S.sound("music/开门.wav")` | 播放音效 |
+| `S.voice("music/v001.wav")` | 播放语音 |
+| `S.stop("bgm")` / `S.stop("all")` | 停音频 |
+| `S.hide("sprite")` / `S.hide("all")` | 清空立绘 / 清空所有图层 |
+| `S.jump("标签名")` / `S.end()` | 跳转 / 直接结束 |
+| `SET 变量 = 值` | 赋值 |
+| `STM.display("文字")` | 右上角弹一条提示 |
+| `R.api(url="...", key=option)` | 发 HTTP 请求，结果在 `STM.API` |
 
 ---
 
-## 3. 语法手册
+## 完整语法手册
 
-### 3.1 文件骨架
+### 文件骨架
+
+一个 `.stm` 文件由三个 `< ... >` 块组成，靠**顺序**区分：
 
 ```stm
 <
-Size=1280x720          <-- Large= 也认
+Size=1280x720
 title="我的第一个游戏"
 Ver="1.0.0"
-Pack="com.example.example"    <-- 保留字段，暂时忽略
+Pack="com.example.example"
 Lang="cn"
-Font="SIMHEI"
+Font="Microsoft YaHei"
 >
 <
 Start:
 ...正文...
 >
 <
-"感谢游玩"             <-- 结尾块，可选
+"感谢游玩"
 >
 ```
 
-三个 `< ... >` 块靠**顺序**区分：第 1 块是头，第 2 块是正文，第 3 块（可选）是结尾。
-
-### 3.2 正文里的语句
-
-| 写法 | 意思 |
+| 字段 | 说明 |
 |---|---|
-| `Start:` | 起始标签（可选，没有也能跑） |
-| `"台词"` | 旁白（不显示名字框） |
-| `塔菲"台词"` 或 `塔菲: "台词"` | 让「塔菲」说话 |
-| `<-- 注释 -->` | 注释，随便写 |
-| `S.character("塔菲")` | **注册角色**（名字里没有图片后缀） |
-| `S.character("png/立绘.png")` | **显示立绘**（名字看起来像图片路径） |
-| `S.cg("bg/教室.png")` | 换背景 |
-| `S.picture("png/纸条.png")` | 背景之上叠一张图 |
-| `S.play("music/bgm.mp3")` | BGM（默认循环，`loop=false` 可关） |
-| `S.sound("music/开门.wav")` | 音效（可叠加，不打断 BGM） |
-| `S.voice("music/v001.wav")` | 语音（新的打断旧的） |
-| `S.stop("bgm")` / `S.stop("all")` | 停音频 |
-| `S.hide("sprite")` / `S.hide("all")` | 隐藏立绘 / 清空所有图层 |
-| `S.jump("标签名")` | 跳到某个标签 |
-| `S.end()` | 直接结束 |
-| `STM.display("文字")` | 右上角弹一条提示 |
-| `STM.python("turtle")` | 载入一个白名单标准库（**只有开发版能用**） |
-| `R.api(url="...", key=option)` | 发一个 HTTP 请求，结果放在 `STM.API` |
-| `SET 变量 = 值` | 赋值 |
-| `变量 = 值` | 同上（英文变量名走这条） |
+| `Size` | 基准分辨率（`Large=` 也认，兼容旧写法） |
+| `title` | 窗口标题，也是标题界面的默认大标题 |
+| `Ver` | 版本号，显示在标题界面 |
+| `Pack` | 包名，目前保留不用（留给以后上手机） |
+| `Lang` | 语言标记，目前保留 |
+| `Font` | 首选字体名，找不到会自动回退到系统里的中文字体 |
 
-### 3.3 选择支与分支
+第 1 块是头，第 2 块是正文，第 3 块（可省略）是结局画面。
+
+### 台词
+
+```stm
+"这是旁白，不显示名字框。"
+
+角色1"这是角色1说的话。"
+角色1: "冒号写法也行。"
+```
+
+带 `+` 号或 `STM.` 的台词会被当成表达式求值，其余一律当纯文本：
+
+```stm
+"你好，**" + STM.ANSWER + "**。"
+"价格是 100 + 50 元"      <-- 这是纯文本，不会算成 150
+```
+
+### 选择支与条件
 
 ```stm
 Choose:
@@ -182,19 +236,23 @@ Choose:
 If "去图书馆":
     S.cg("bg/图书馆.png")
     "图书馆很安静。"
+
 If "回宿舍":
     S.cg("bg/宿舍.png")
+
 Else:
     "哪儿也不去。"
+
 EndIf
 ```
 
-- **缩进 4 格（或 Tab）= 进入上一层分支。** 这是 `If` 范围的判定方式。
-- `EndIf` / `EndChoose` 可写可不写；写了也能正常工作。
-- `If "选项名"` 判断的是「有没有选过这个选项」。
-- `If 好感度 >= 10` 判断变量。
+- **缩进 4 格（或 Tab）就是进入上一层分支** —— 这和 Markdown 的精神一致
+- `EndIf` / `EndChoose` 可写可不写
+- `If "选项名"` 判断「有没有选过这个选项」
+- `If 好感度 >= 10` 判断变量
+- 没有 `Elif`，用 `Else:` 里面套 `If` 即可
 
-### 3.4 询问玩家输入
+### 询问玩家输入
 
 ```stm
 STM.Q = "请问你叫什么名字？"
@@ -203,10 +261,10 @@ Question:
 "原来叫 **" + STM.ANSWER + "** 啊。"
 ```
 
-- `Question:` 下面缩进一个 `"..."`，或者用 `STM.Q = "..."` 指定提示文字。
-- 玩家输入的结果存在 **`STM.ANSWER`**。
+- 提示文字写在 `STM.Q` 里，也可以缩进写在 `Question:` 下面
+- 玩家输入的结果存在 **`STM.ANSWER`**
 
-### 3.5 Markdown 内联
+### Markdown 内联
 
 台词里可以直接写：
 
@@ -220,134 +278,203 @@ Question:
 | `[size=28]文字[/size]` | 字号 |
 | `{ruby:汉字|かんじ}` | 注音，渲染成「汉字(かんじ)」 |
 
-### 3.6 options.stm
+### 变量
+
+```
+SET 好感度 = 0
+SET 好感度 = 好感度 + 10
+SET 姓名 = STM.ANSWER
+SET 心情 = "开心"
+```
+
+变量名可以是中文。第一次出现必须用 `SET`，之后直接写名字引用。
+
+### options.stm
 
 ```stm
 <
 About = "显示在「关于」界面里的文字"
 Enc   = "加密口令"
-dec   = "*.stm,*.png,*.jpg,*.mp3,*.wav,*.ogg"   <-- 加密时打包哪些文件
-AllowNet = "true"                                <-- 发布版允不允许 R.api 联网
+dec   = "*.stm,*.png,*.jpg,*.mp3,*.wav,*.ogg"
+AllowNet = "true"
 >
 ```
 
-`R.api(key=option)` 会自动从这里的 `Enc` 取值，剧本里就不用写明文密钥。
-
----
-
-## 4. 设计稿之外的补充约定
-
-设计稿里没写、但实现必须拍板的地方，全在这。**你不满意的话直接说，我改。**
-
-| # | 项目 | 约定 | 为什么 |
-|---|---|---|---|
-| 1 | 用户输入存哪 | `STM.ANSWER` | 设计稿只写了 `STM.Q`（提示文字），没说输入存哪 |
-| 2 | `If` / `Choose` 的范围 | 缩进 4 格 | 设计稿没有 `EndIf` 也没有缩进说明，解析器无法判断分支到哪结束。`EndIf` 也支持 |
-| 3 | `R.api` 的参数 | 补逗号 `url=..., key=...` | 设计稿写的 `R.api(url="a"key="b")` 少了逗号 |
-| 4 | 全角引号 | 自动纠正成半角 | 设计稿通篇是 `“ ”`，直接抄进 `.stm` 会全线解析失败 |
-| 5 | `Question:` 的提示 | 下一行缩进的 `"..."`，或 `STM.Q` | |
-| 6 | 变量引用 | 台词里带 `+` 或 `STM.` 才会当算式求值，其余一律当纯文本 | 不然每句台词都要转义，太痛苦 |
-| 7 | `S.jump` / `S.hide` / `S.end` | 新增 | 设计稿有标签但没有跳转，有图层但没有隐藏，做长剧情会很难受 |
-| 8 | 存档不存引擎状态 | 只存「玩家所有选择 + 翻到第几句」，读档时重放 | 生成器没法序列化，这是最稳的做法 |
-| 9 | `STM.python` | 白名单 + 仅开发版可用 | 设计稿自己也担心隐私问题；右上角提示挡不住 `os.system` |
-| 10 | 报错界面 | 开发版显示完整回溯，发布版只给一句友好提示 + 记日志 | 设计稿说「Error 只在开发环境显示」，但没说发布版给用户看什么 |
-
-### 设计稿里我**没动**的地方
-
-`S.character` 的双重含义**原样保留**（你选的那条）——参数像图片路径就是立绘，否则是注册角色名。
-`Choose` / `If` / `SET` / `Question` 的关键字、`< >` 块定界、五级错误命名，全部按原样实现。
-
----
-
-## 5. 操作说明
-
-| 操作 | 键 |
+| 字段 | 说明 |
 |---|---|
-| 推进 | 鼠标左键 / 空格 / 回车 |
-| 历史记录 | 滚轮上翻 / `H` |
-| 自动播放 | `A` |
-| 快进 | 按住 `Ctrl` |
-| 存档 | `F5` |
-| 读档 | `F9` |
-| 菜单（音量、文字速度、存读档） | `Esc` |
+| `About` | 「关于」界面的内容 |
+| `Enc` | 加密/解密口令，打包时用 |
+| `dec` | 打包时收集哪些文件（逗号分隔的 glob） |
+| `AllowNet` | 发布版要不要允许 `R.api` 联网，默认 `true` |
 
-设置会自动保存在 `<游戏目录>/.stmg_save/settings.json`。
+`R.api(key=option)` 会从这里的 `Enc` 取值，剧本里就不用写明文密钥。
+
+### 补充约定
+
+设计稿没写死、但实现必须拍板的地方：
+
+| # | 项目 | 约定 | 原因 |
+|---|---|---|---|
+| 1 | 玩家输入存哪 | `STM.ANSWER` | 只规定了提示文字 `STM.Q`，没说输入存哪 |
+| 2 | `If` 的范围 | 缩进 4 格，`EndIf` 兼容 | 没有结束标记，解析器必须有个判定依据 |
+| 3 | 台词求值 | 带 `+` 或 `STM.` 才算表达式 | 否则每句台词都要考虑转义 |
+| 4 | 引号 | 全角 `“ ”` 自动纠正成半角 | 中文输入法下很容易打错，直接容错 |
+| 5 | 立绘身份 | `tag=` 默认用图片文件名 | 同框多张立绘需要区分 |
+| 6 | `S.cg()` | 换背景会清空立绘 | 和 Ren'Py 的 `scene` 语义一致 |
 
 ---
 
-## 6. 加密与发布
+## 项目结构
 
-```bat
-.venv\Scripts\python.exe stmenc\start.py demo --out dist\demo
+```
+STMG/
+├── launcher.py              图形化启动器（tkinter）
+├── STMG启动器.bat           双击打开启动器
+├── start.py                 剧本启动器：跑一个 script.stm
+├── start.bat                Windows 快捷入口
+├── stmg/                    ★ 引擎核心
+│   ├── parser.py            .stm → 语句树
+│   ├── runtime.py           语句树 → 事件流
+│   ├── session.py           推进器：当前显示什么 / 存读档
+│   ├── gui.py               pygame 主界面
+│   ├── render.py            排版、文本框、立绘布局
+│   ├── audio.py             BGM / 音效 / 语音
+│   ├── markdown.py          内联标记 → 样式片段
+│   ├── options.py           options.stm 解析
+│   ├── save.py              存档槽
+│   ├── crypto.py            .stmdec 加解密
+│   ├── pack.py              发布版资源容器
+│   ├── project.py           项目的发现 / 新建 / 移除
+│   ├── stdlib_api.py        STM.python 白名单 + R.api
+│   └── errors.py            错误分级
+├── stmenc/start.py          加密打包器
+├── tools/
+│   ├── check.py             语法检查器
+│   └── selftest.py          引擎自检
+├── demo/                    示例游戏（故意没有素材）
+└── projects/                你自己的项目放这里
+```
+
+引擎本身不依赖 UI，`Runtime` + `Session` 可以完全无头跑，方便做自动化测试。
+
+---
+
+## 命令行工具
+
+```bash
+# 语法检查（带语句树）
+python tools/check.py demo
+python tools/check.py demo --verbose
+
+# 引擎自检：解析 / 推进 / 加解密 / 资源包 / 界面 / 项目管理
+python tools/selftest.py
+```
+
+自检覆盖 33 项，改完引擎先跑它比开窗口快得多。
+
+---
+
+## 打包发布
+
+```bash
+python stmenc/start.py demo
+python stmenc/start.py demo --out dist/我的游戏 --key 我的口令
+python stmenc/start.py demo --no-assets      # 只加密剧本，不打包素材
 ```
 
 产出：
 
 ```
-dist\demo\
+dist/我的游戏/
 ├── script.stmdec      加密的主剧本
 ├── options.stmdec     加密的配置
-├── assets.stmdec      gui/ 和 music/ 打成一个加密资源包
-├── stmg\              引擎本体（Python 源码）
-├── start.py           生成的启动器，口令写在里面
+├── assets.stmdec      素材打成一个加密资源包
+├── stmg/              引擎本体
+├── start.py           生成的启动器（口令写在里面）
 ├── start.bat          双击运行
 └── 打包成exe.bat      用 PyInstaller 封成单文件 exe
 ```
 
-`.stmdec` 格式：`STMG` + 版本 + salt + nonce + 密文 + HMAC 校验。
-密钥派生用 PBKDF2-HMAC-SHA256（12 万轮），密钥流用 HMAC-SHA256，纯标准库，零额外依赖。
-改一个字节就会校验失败——这条自检里有测。
+封 exe 需要先装 PyInstaller：
 
-### ⚠️ 加密强度说明（重要）
+```bash
+pip install pyinstaller
+```
 
-**这是防小白，不是安全机制。** 原因：
-
-1. 口令必须写在 `start.py` / `exe` 里，玩家认真找一定翻得出来；
-2. 玩家只要肯花时间，什么加密都能破。
-
-所以：**绝对不要在剧本或 options 里放真 API Key。** 它只能做到「双击打不开、随手改不了」。
+然后双击发布目录里的「打包成exe.bat」。
 
 ---
 
-## 7. 已知限制 / 下一步可以做的
+## 关于加密（重要）
 
-- 立绘只有一个位置，没有表情差分、没有位置/缩放参数
-- 没有转场特效（淡入淡出、溶解）—— 只做了图层切换
-- 存档用「重放法」，如果剧本里有随机数或 `R.api` 产生的分支，重放可能对不上
-- `S.picture` / 立绘的位置是写死的，还没做成可配置
-- 音频格式取决于 pygame，mp3/wav/ogg 都能放，但放不了 flac
-- 没有 CG 回廊、没有多语言切换、没有跳过已读
-- 错误提示还是英文式 `->` 而不是更友好的中文长句
+`.stmdec` 的文件格式是：
 
----
+```
+STMG + 版本 + salt + nonce + 密文 + HMAC-SHA256 校验
+密钥派生：PBKDF2-HMAC-SHA256（12 万轮）
+密钥流　：HMAC-SHA256
+```
 
-## 8. 测试清单（照着这个测，测到问题直接把现象丢给我）
+改一个字节就会校验失败（自检里有测这条）。
 
-- [ ] `tools\check.py` 在我故意写错行时，报错的行号对不对
-- [ ] 对白 / 旁白 / 多角色切换，名字框颜色是不是每个角色不同
-- [ ] `Choose` 能点，`If` 走对分支，两条分支都走一遍
-- [ ] 缩进嵌套两层以上不串味（`If` 里套 `If`）
-- [ ] `Question` 输入的值能在后面剧本里用（`STM.ANSWER`）
-- [ ] `S.cg` / `S.picture` / 立绘，三层叠放顺序对不对
-- [ ] BGM 循环、`S.sound` 不打断 BGM、`S.voice` 能打断
-- [ ] Markdown 的加粗 / 颜色 / 注音在文本框里真的生效
-- [ ] 存档 → 退出 → 读档，能回到同一句
-- [ ] `stmenc` 打包后能跑；手动改 `script.stmdec` 一个字节，应该报「校验失败」
-- [ ] 窗口拉伸 / 全屏切换
-- [ ] 缺素材时画占位块，不崩
-- [ ] 启动器：新建项目 → 生成的项目直接能启动
-- [ ] 启动器：语法检查的输出有没有正常显示在下面的日志区
-- [ ] 启动器：移除项目后，文件夹是不是躺在 `projects\_trash\` 里（不是被删）
+**但这是防小白，不是安全机制。** 原因很简单：
+
+1. 口令必须写在启动器 / exe 里，玩家认真找一定翻得出来
+2. 玩家只要肯花时间，什么加密都能破
+
+它只能做到「双击打不开、随手改不了」。**所以：绝对不要在剧本或 options 里放真的 API Key。**
 
 ---
 
-## 9. 改动记录
+## 已知限制
 
-- `stmg/parser.py`、`stmg/markdown.py` 是最早读设计稿时先写的原型，后来按最终语法重写了
-- 全部代码无第三方依赖，只有 pygame（启动器只用 tkinter，连 pygame 都不需要）
-- `start.bat` 无参数时改成打开启动器，带参数还是老样子直接跑剧本
-- 「移除项目」不删盘，只挪到 `projects\_trash\`；引擎外的项目更是一律不动磁盘
+- 没有转场特效（淡入淡出、溶解），只做图层切换
+- 立绘不支持缩放、旋转、表情差分（`at` 只认左右中）
+- 存档用「记录玩家选择 + 重放」实现；如果剧本里有随机数或 `R.api` 产生的分支，读档可能对不上
+- 没有 CG 回廊、多语言切换、跳过已读
+- `S.picture` 和立绘的位置是写死的，没做成可配置
+- 音频格式取决于 pygame，mp3 / wav / ogg 能放，flac 不行
+- 错误提示的措辞还偏开发者向
 
 ---
 
-*设计：ciallo0721-cmd　实现：WorkBuddy*
+## 常见问题
+
+**Q：跑起来全是彩色色块，图呢？**
+A：那是素材缺失时的占位块。把图放进项目的 `images/` 或 `bg/`、`png/` 下，路径对上就好。`tools/check.py` 会列出所有找不到的素材。
+
+**Q：为什么缩进错了不报错，只是不生效？**
+A：分支范围就是靠缩进判定的，缩进不对解析器会当你在写平级语句。`--check` 会对可疑的缩进给出提示。
+
+**Q：能做成 exe 吗？**
+A：能。`stmenc/start.py` 会生成一个 `打包成exe.bat`，用 PyInstaller 封。
+
+**Q：为什么启动器是 tkinter，游戏却是 pygame？**
+A：启动器是开发工具，需要原生文件对话框和滚动列表，tkinter 是标准库、零依赖，更合适；游戏要的是渲染控制力，用 pygame。启动器连 pygame 都不需要，引擎坏了它照样能打开。
+
+**Q：支持中文变量名吗？**
+A：支持。`SET 好感度 = 0` 完全合法。
+
+---
+
+## 参与开发
+
+欢迎提 Issue 和 PR。
+
+改引擎之前建议先跑一遍自检：
+
+```bash
+python tools/selftest.py
+```
+
+加新语法的话，顺手在 `demo/script.stm` 里补一个用例，自检就能覆盖到。
+
+---
+
+## 许可
+
+[MIT](LICENSE)
+
+---
+
+*设计：ciallo0721-cmd*

@@ -217,7 +217,8 @@ class Runtime(object):
                     self.names[name] = NAME_COLORS[len(self.names) % len(NAME_COLORS)]
 
             elif k == "sprite":
-                yield {"t": "sprite", "path": self.resolve(s["path"])}
+                yield from self._sprite_event(s["path"], s.get("args") or [],
+                                              s.get("kwargs") or {})
 
             elif k == "label":
                 continue
@@ -236,9 +237,10 @@ class Runtime(object):
 
         if obj == "S":
             if method == "character" and a0:          # 兜底，正常走不到
-                yield {"t": "sprite", "path": self.resolve(a0)}
+                yield from self._sprite_event(a0, args, kw)
             elif method in ("cg", "bg", "background"):
-                yield {"t": "bg", "path": self.resolve(a0)}
+                # 和 Ren'Py 的 scene 一样：换背景会先把立绘清空
+                yield {"t": "bg", "path": self.resolve(a0), "clear": True}
             elif method == "picture":
                 yield {"t": "picture", "path": self.resolve(a0)}
             elif method == "play":
@@ -302,6 +304,20 @@ class Runtime(object):
     # ------------------------------------------------------------------ #
     # 小工具
     # ------------------------------------------------------------------ #
+    def _sprite_event(self, path, args, kwargs):
+        """拆 S.character("图.png", pos="left", tag="kongjie")。
+
+        立绘可以同时站好几张，靠 tag 认人、pos 决定站哪（left/center/right）。
+        不写 tag 就用图片文件名当 tag。
+        """
+        pos = str(kwargs.get("pos") or (args[1] if len(args) > 1 else "center"))
+        tag = kwargs.get("tag") or ""
+        if not tag:
+            base = os.path.basename(path.replace("\\", "/"))
+            tag = os.path.splitext(base)[0]
+        return [{"t": "sprite", "path": self.resolve(path),
+                 "pos": pos.lower(), "tag": tag}]
+
     def _say_text(self, raw):
         """台词默认是纯文本；带 + 号或 STM. 的才当算式求值。"""
         if "+" in raw or "STM." in raw:

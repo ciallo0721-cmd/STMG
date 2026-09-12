@@ -317,7 +317,9 @@ def _parse_lines(lines, issues):
                 if obj.upper() == "S" and method.lower() == "character":
                     val = args[0] if args else ""
                     if _looks_like_image(val):
-                        stmts.append({"k": "sprite", "path": val, "line": n})
+                        # 多张立绘可以同时在场，靠 tag 区分，pos 决定站哪
+                        stmts.append({"k": "sprite", "path": val, "line": n,
+                                      "args": args, "kwargs": kwargs})
                     else:
                         stmts.append({"k": "define", "name": val, "line": n})
                     continue

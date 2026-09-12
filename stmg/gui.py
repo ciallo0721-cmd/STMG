@@ -20,6 +20,10 @@ TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING = range
 BOX_RATIO = 0.30          # 文本框占屏高的比例
 NAME_RATIO = 0.075
 
+# 立绘站位（横向中心点占屏宽的比例）
+SPRITE_X = {"left": 0.24, "center": 0.5, "right": 0.76,
+            "farleft": 0.13, "farright": 0.87}
+
 
 class Settings(object):
     def __init__(self, root):
@@ -427,17 +431,22 @@ class App(object):
                                 int(self.W * 0.6), int(self.H * 0.5))
                 render.draw_placeholder(self.base, r, pic, 2)
 
-        sprite = self.session.scene.get("sprite", "")
-        if sprite:
-            img = render.load_image(sprite)
+        # 立绘：tag -> {path, pos}，可以同时站好几张，按 tag 排序保证叠放稳定
+        sprites = self.session.scene.get("sprites") or {}
+        for i, tag in enumerate(sorted(sprites)):
+            item = sprites[tag]
+            path = item.get("path", "")
+            cx = int(self.W * SPRITE_X.get(item.get("pos", "center"), 0.5))
+            bottom = int(self.H * 0.78)
+            img = render.load_image(path)
             if img:
-                img = render.fit_into(img, int(self.W * 0.45), int(self.H * 0.72))
-                self.base.blit(img, (int(self.W * 0.42 - img.get_width() // 2),
-                                     int(self.H * 0.72) - img.get_height()))
+                img = render.fit_into(img, int(self.W * 0.42), int(self.H * 0.76))
+                self.base.blit(img, (cx - img.get_width() // 2,
+                                     bottom - img.get_height()))
             else:
-                r = pygame.Rect(int(self.W * 0.42), int(self.H * 0.18),
-                                int(self.W * 0.2), int(self.H * 0.5))
-                render.draw_placeholder(self.base, r, sprite, 1)
+                w, h = int(self.W * 0.2), int(self.H * 0.54)
+                r = pygame.Rect(cx - w // 2, bottom - h, w, h)
+                render.draw_placeholder(self.base, r, path, i + 1)
 
         self.draw_textbox()
 

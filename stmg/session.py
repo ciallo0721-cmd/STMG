@@ -25,7 +25,9 @@ class Session(object):
     def reset(self, replay=None, target_say=0):
         self.runtime = Runtime(self.script, self.options, self.dev_mode)
         self.gen = self.runtime.run(replay=replay)
-        self.scene = {"bg": "", "picture": "", "sprite": "",
+        # sprites 是个字典：tag -> {"path":..., "pos": "left"/"center"/"right"}
+        # 同时可以站好几张立绘，跟 Ren'Py 的 show 一个意思。
+        self.scene = {"bg": "", "picture": "", "sprites": {},
                       "bgm": "", "bgm_loop": True}
         self.block = None
         self.effects = []        # 本次推进中产生的场景/音频指令
@@ -78,8 +80,20 @@ class Session(object):
 
     def _apply(self, ev):
         t = ev["t"]
-        if t in ("bg", "picture", "sprite"):
-            self.scene[t] = ev.get("path", "")
+        if t == "bg":
+            self.scene["bg"] = ev.get("path", "")
+            if ev.get("clear"):
+                # 和 Ren'Py 的 scene 一样：换背景顺带清场
+                self.scene["sprites"].clear()
+        elif t == "picture":
+            self.scene["picture"] = ev.get("path", "")
+        elif t == "sprite":
+            tag = ev.get("tag") or "_"
+            if ev.get("path"):
+                self.scene["sprites"][tag] = {"path": ev["path"],
+                                              "pos": ev.get("pos", "center")}
+            else:
+                self.scene["sprites"].pop(tag, None)
         elif t == "bgm":
             self.scene["bgm"] = ev.get("path", "")
             self.scene["bgm_loop"] = ev.get("loop", True)
@@ -90,9 +104,11 @@ class Session(object):
         elif t == "hide":
             what = ev.get("what", "sprite")
             if what in ("sprite", "all"):
-                self.scene["sprite"] = ""
+                self.scene["sprites"].clear()
             if what in ("picture", "all"):
                 self.scene["picture"] = ""
+            if what not in ("sprite", "all", "picture"):
+                self.scene["sprites"].pop(what, None)   # 按 tag 隐藏单个立绘
         elif t == "toast":
             self.toasts.append(ev.get("text", ""))
         self.effects.append(ev)

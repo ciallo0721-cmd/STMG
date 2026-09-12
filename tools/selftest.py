@@ -77,7 +77,7 @@ def test_headless(sc):
 
 def test_crypto():
     print("\n== 3. 加解密 ==")
-    plain = "塔菲说：关注永雏塔菲谢谢喵！".encode("utf-8") * 40
+    plain = "这是一段用来测试加解密的中文文本，混排 English 和 12345。".encode("utf-8") * 40
     blob = crypto.encrypt(plain, "p@ssword-123")
     check("密文和明文不一样", blob != plain)
     check("解密还原", crypto.decrypt(blob, "p@ssword-123") == plain)

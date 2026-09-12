@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """STMG —— Super Text Markdown Galgame engine.
 
-设计：ciallo0721-cmd
-实现：WorkBuddy（塔菲喵）
+一个把剧本和引擎分开的视觉小说引擎：
+parser 负责把 .stm 解析成语句树，Runtime 把它跑成事件流，
+Session 管推进和存读档，gui 负责画出来。中间几层都不依赖 pygame。
 
 常用入口：
 

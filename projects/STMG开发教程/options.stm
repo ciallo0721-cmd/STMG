@@ -1,0 +1,6 @@
+<
+About = "STMG 引擎官方开发教程：边玩边学怎么写 .stm 剧本。从启动器选它，点「启动游戏」即可。"
+Enc = "tutorial-no-enc"
+dec = "*.stm,*.png,*.jpg,*.mp3,*.wav,*.ogg"
+AllowNet = "false"
+>

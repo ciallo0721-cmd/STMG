@@ -5,13 +5,30 @@
 实现里凡是设计稿没写死的地方，都在下面 **§4 补充约定** 里单独标了出来。
 
 当前状态：**能跑通全流程**（解析 → 剧情推进 → 界面 → 存读档 → 加密发布）。
-自检 23 项全过。
+自检 33 项全过。
+
+---
+
+## 0. 从零开始（clone 下来怎么跑）
+
+只要你机器上装了 Python 3.9+：
+
+```bat
+git clone https://github.com/ciallo0721-cmd/STMG.git
+cd STMG
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+STMG启动器.bat
+```
+
+只有 pygame 一个依赖。启动器用的是标准库的 tkinter，Windows/macOS 自带，
+Linux 上如果没装：`sudo apt install python3-tk`。
 
 ---
 
 ## 1. 快速开始
 
-环境已经建好了（虚拟环境在 `STMG/.venv`，装在 G 盘，没碰 C 盘）。
+本机已经建好环境了（虚拟环境在 `STMG/.venv`，装在 G 盘，没碰 C 盘）。
 
 ### 用启动器（推荐）
 

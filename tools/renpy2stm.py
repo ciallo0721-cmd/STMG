@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """Ren'Py → STMG 转换器。
 
-⚠️ 状态：未完成，还没在真实工程上验证通过，先别指望它能直接转出能跑的工程。
-   目前已知问题：角色声明和部分定义语句的处理还不完整。
-
-    python tools/renpy2stm.py D:\\renpy\\ydlx\\game
+    python tools/renpy2stm.py <游戏目录>
     python tools/renpy2stm.py <游戏目录> --out projects/ydlx --title 印度旅行
     python tools/renpy2stm.py <游戏目录> --no-assets        只转剧本，不拷素材
+
+<游戏目录> 指 Ren'Py 工程里的 game 文件夹（里面有 script.rpy 的那个）。
+转换完会在输出目录生成 script.stm / options.stm / 转换报告.md，
+并把 images/ 和 audio/ 拷过去。之后用启动器或者 start.py 直接就能跑。
 
 能转的：
     define x = Character("名字")      ->  S.character("名字")
@@ -158,26 +159,40 @@ class Ctx(object):
 # 素材
 # --------------------------------------------------------------------------- #
 def find_asset(ctx, name):
-    """把 Ren'Py 里的资源名找成真实文件。返回 (out_relative, abs_src)。"""
+    """把 Ren'Py 里的资源名找成真实文件。返回 (out_relative, abs_src)。
+
+    Ren'Py 的资源名经常不写扩展名（引擎会自动补全），这里得自己枚举一遍。
+    """
     if not name:
         return "", ""
     name = name.replace("\\", "/").strip('"')
-    if not os.path.splitext(name)[1]:
-        return "", ""                      # 没有扩展名，交给调用方报 TODO
-    cands = [name]
-    if not name.startswith("images/") and not name.startswith("audio/"):
-        cands += ["images/" + name, "audio/" + name]
+    stem, ext = os.path.splitext(name)
+
+    if ext:
+        cands = [name]
+        if not name.startswith(("images/", "audio/")):
+            cands += ["images/" + name, "audio/" + name]
+    else:
+        # 没写扩展名：按常见后缀挨个试
+        cands = []
+        for e in list(IMAGE_EXT) + list(AUDIO_EXT):
+            cands += [name + e, "images/" + name + e, "audio/" + name + e]
+
     for rel in cands:
         p = os.path.join(ctx.game_dir, rel)
         if os.path.isfile(p):
             return norm_rel(rel), p
+
+    # 还找不到就按文件名大小写不敏感地翻一遍
     base = os.path.basename(name).lower()
     for sub in ("images", "audio", ""):
         d = os.path.join(ctx.game_dir, sub) if sub else ctx.game_dir
         if not os.path.isdir(d):
             continue
         for fn in os.listdir(d):
-            if fn.lower() == base:
+            low = fn.lower()
+            hit = (low == base) if ext else (os.path.splitext(low)[0] == base)
+            if hit:
                 rel = (sub + "/" + fn) if sub else fn
                 return norm_rel(rel), os.path.join(d, fn)
     return "", ""
@@ -789,6 +804,17 @@ def main(argv):
             "<",
             "Start:",
             ""]
+
+    # 把 define 出来的角色都声明一遍，不然 STMG 会报「未定义角色就说话」
+    declared, chars_out = set(), []
+    for disp in ctx.chars.values():
+        if disp and disp not in declared:
+            declared.add(disp)
+            chars_out.append('S.character("%s")' % disp)
+    if chars_out:
+        head.append("<-- 下面这些角色是从 define Character(...) 转过来的 -->")
+        head.extend(chars_out)
+        head.append("")
 
     lines = head + [l for l in body] + [">", "<", '"感谢游玩"', ">", ""]
     script_path = os.path.join(out_dir, "script.stm")

@@ -372,6 +372,34 @@ python tools/selftest.py
 
 自检覆盖 33 项，改完引擎先跑它比开窗口快得多。
 
+### Ren'Py 转换器
+
+把现成的 Ren'Py 工程转成 STMG：
+
+```bash
+python tools/renpy2stm.py D:\renpy\你的工程\game
+python tools/renpy2stm.py <游戏目录> --out projects/我的游戏 --title 游戏名
+python tools/renpy2stm.py <游戏目录> --no-assets     # 只转剧本，不拷素材
+```
+
+`<游戏目录>` 指 Ren'Py 工程里的 `game` 文件夹（有 `script.rpy` 的那个）。
+
+会做的事：
+
+- `define x = Character("名字")` → 注册角色，并自动在开头补上声明
+- `scene` / `show` / `hide` → `S.cg()` / `S.character(..., pos=, tag=)` / `S.hide()`，
+  `at left` / `at right` 会转成站位
+- `menu:` → `Choose:` + 每个选项一个 `If "选项":`
+- `if / elif / else` → `If / Else`（`elif` 展开成 `Else:` 里套 `If`）
+- `$ 变量 = 值` → `SET`，`renpy.input()` → `Question:` + `STM.ANSWER`
+- `play music / sound`、`voice`、`stop music`、`jump`、`return` 全部对应转换
+- `{b}` `{i}` `{color=}` `{size=}` 和 `[变量]` 插值 → Markdown 标记和字符串拼接
+- `images/` 和 `audio/` 自动拷进新项目，资源名不写扩展名也能找到
+
+转完会生成一份 `转换报告.md`，列出转换统计和所有需要手工处理的地方。
+`screen` / `transform` / `style` 这类界面定义不会转（STMG 的界面在 `gui.py`），
+转场（`with fade`）目前会丢弃。
+
 ---
 
 ## 打包发布

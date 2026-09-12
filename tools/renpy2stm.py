@@ -54,6 +54,7 @@ AUDIO_EXT = (".ogg", ".mp3", ".wav", ".opus", ".flac", ".m4a")
 
 RE_DEF_CHAR = re.compile(r'^define\s+([\w\u4e00-\u9fff]+)\s*=\s*Character\s*\((.*)\)\s*$')
 RE_DEF_NAME = re.compile(r'^define\s+config\.name\s*=\s*_?\(\s*"(.*?)"\s*\)')
+RE_DEF_AUDIO = re.compile(r'^define\s+audio\.([\w]+)\s*=\s*"(.*?)"\s*$')
 RE_IMAGE = re.compile(r'^image\s+([\w\u4e00-\u9fff][\w\u4e00-\u9fff\s\-]*?)\s*=\s*"(.*?)"\s*$')
 RE_LABEL = re.compile(r'^label\s+([\w.]+)\s*(?:\(.*?\))?\s*:\s*$')
 RE_IF = re.compile(r'^if\s+(.+?)\s*:\s*$')
@@ -63,9 +64,9 @@ RE_MENU = re.compile(r'^menu\s*(?:\(.*?\))?\s*:\s*$')
 RE_OPTION = re.compile(r'^"(?P<cap>.*?)"\s*(?:if\s+(?P<cond>.+?))?\s*:\s*$')
 RE_SET = re.compile(r'^\$\s*(.+)$')
 RE_ASSIGN = re.compile(r'^([\w\u4e00-\u9fff][\w\u4e00-\u9fff.]*)\s*(=|\+=|-=|\*=|/=)\s*(.+)$')
-RE_SAY_NAMED = re.compile(r'^(?P<who>[\w\u4e00-\u9fff]+)\s+(?P<text>".*")$')
-RE_SAY_BARE = re.compile(r'^(?P<text>".*")$')
-RE_SAY_VERB = re.compile(r'^(?:centered|extend|nvl\s+clear\s+)?(?P<text>".*")$')
+RE_SAY_NAMED = re.compile(r'^(?P<who>[\w\u4e00-\u9fff]+)\s+(?P<text>".*"|\'.*\')$')
+RE_SAY_BARE = re.compile(r'^(?P<text>".*"|\'.*\')$')
+RE_SAY_VERB = re.compile(r'^(?:centered|extend|nvl\s+clear\s+)?(?P<text>".*"|\'.*\')$')
 RE_GUI_INIT = re.compile(r'gui\.init\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)')
 RE_STR = re.compile(r'"(?:[^"\\]|\\.)*"')
 
@@ -118,6 +119,19 @@ def indent_of(raw):
     return len(raw) - len(raw.lstrip(" \t"))
 
 
+BASE_INDENT = 4  # Ren'Py 每层统一缩进 4 格
+
+def out_col(src_ind):
+    """Ren'Py 源缩进 → STMG 输出缩进。
+
+    Ren'Py 的 label / Start 的 body 比关键字深 4 格；而 STMG 要求
+    顶层 label / Start 与正文同列（col 0），再往里每层才 +4。两者
+    唯一的系统性差异就是这固定的 4 格，所以统一把每个语句往前挪 4 格
+    （最小 0）即可无缝对齐，嵌套结构也不会错位。
+    """
+    return max(0, src_ind - BASE_INDENT)
+
+
 def unescape(text):
     return (text.replace('\\"', '"').replace("\\n", "\n")
                 .replace("\\t", "\t").replace("\\\\", "\\"))
@@ -142,6 +156,7 @@ class Ctx(object):
         self.out_dir = out_dir
         self.chars = {}          # 变量名 -> 显示名
         self.images = {}         # "bg airplane" -> 真实相对路径
+        self.audio_aliases = {}  # "bgm_gentle" -> "audio/gentle.ogg"
         self.title = ""
         self.size = "1280x720"
         self.todo = []           # (文件, 行号, 原因, 原文)
@@ -229,7 +244,8 @@ def render_text(ctx, path, line, raw_text, raw_stmt):
     没插值就是 `"……"`；有 [变量] 就拼成 `"前" + 变量 + "后"`。
     """
     body = raw_text.strip()
-    if body.startswith('"') and body.endswith('"') and len(body) >= 2:
+    if len(body) >= 2 and ((body[0] == '"' and body[-1] == '"') or
+                           (body[0] == "'" and body[-1] == "'")):
         body = body[1:-1]
     body = unescape(body)
 
@@ -246,9 +262,19 @@ def render_text(ctx, path, line, raw_text, raw_stmt):
     if not pieces:
         return '""'
     if len(pieces) == 1:
-        return pieces[0]
+        only = pieces[0]
+        if only.startswith('"'):
+            return only
+        # 单个裸变量（如 [memory_message]）：运行时靠 + 求值，需要以引号串开头，
+        # 否则 SAY_RE 会把角色名一起吞进文本里。
+        return '"" + ' + only
+    expr = " + ".join(pieces)
     ctx.tick("插值拼接")
-    return " + ".join(pieces)
+    # 保证整体以引号串开头，否则像 角色 "[var] + 后缀" 会被解析成
+    # who=角色 var...，角色名被吃。
+    if not expr.startswith('"'):
+        expr = '"" + ' + expr
+    return expr
 
 
 def split_modifiers(rest):
@@ -300,6 +326,7 @@ def conv(items, i, cur_indent, ctx, path):
 def handle(items, i, ind, ctx, path):
     text = items[i][1]
     ln = items[i][2]
+    I = lambda s: (" " * out_col(ind)) + s  # 叶子语句带好当前缩进的前导空格
 
     # ---- 注释（已在预处理里转好，这里直接输出）----
     if text.startswith("<--"):
@@ -311,11 +338,13 @@ def handle(items, i, ind, ctx, path):
         name = m.group(1)
         # start 不单独出标签：main() 已经在正文开头放了 Start:，
         # 再出一个会变成两个 Start: 标签。
-        out = [] if name == "start" else ["%s:" % name]
+        out = [] if name == "start" else [I("%s:" % name)]
         j, b_ind = body_span(items, i, ind)
         if b_ind is not None:
             if out:
                 out.append("")
+            # 整段 body 交给 conv 递归，每条语句自己按 out_col 算好输出缩进，
+            # 顶层 label/body 落到 col 0，嵌套的 if/Choose 自然每层 +4，无需事后 rebase。
             out.extend(conv(items, i + 1, b_ind, ctx, path))
             if out and name != "start":
                 out.append("")
@@ -331,7 +360,7 @@ def handle(items, i, ind, ctx, path):
     m = re.match(r'^default\s+([\w\u4e00-\u9fff][\w\u4e00-\u9fff]*)\s*=\s*(.+)$', text)
     if m:
         ctx.tick("变量初值")
-        return ["SET %s = %s" % (m.group(1), python_expr(ctx, m.group(2)))], i + 1
+        return [I("SET %s = %s" % (m.group(1), python_expr(ctx, m.group(2))))], i + 1
 
     # ---- if / elif / else 链 ----
     if RE_IF.match(text) or RE_ELIF.match(text) or RE_ELSE.match(text):
@@ -348,7 +377,7 @@ def handle(items, i, ind, ctx, path):
                     (RE_ELIF.match(items[j][1]) or RE_ELSE.match(items[j][1])):
                 continue
             break
-        return emit_chain(ctx, chain, ""), idx
+        return emit_chain(ctx, chain, out_col(ind)), idx
 
     # ---- menu ----
     if RE_MENU.match(text):
@@ -358,11 +387,11 @@ def handle(items, i, ind, ctx, path):
     if text.startswith("scene ") or text == "scene":
         rest = text[6:].strip()
         if not rest:
-            return ["S.cg(\"\")"], i + 1
+            return [I('S.cg("")')], i + 1
         name, at = split_modifiers(rest)
         rel = image_path(ctx, name, ln, text)
         ctx.tick("scene")
-        return ['S.cg("%s")' % rel], i + 1
+        return [I('S.cg("%s")' % rel)], i + 1
 
     # ---- show ----
     if text.startswith("show "):
@@ -372,10 +401,10 @@ def handle(items, i, ind, ctx, path):
         tag = name.split()[0] if name.split() else "sprite"
         if name.lower().startswith("bg"):
             ctx.tick("show->cg")
-            return ['S.cg("%s")' % rel], i + 1
+            return [I('S.cg("%s")' % rel)], i + 1
         ctx.tick("show->立绘")
-        return ['S.character("%s", pos="%s", tag="%s")'
-                % (rel, pick_pos(at), tag)], i + 1
+        return [I('S.character("%s", pos="%s", tag="%s")'
+                % (rel, pick_pos(at), tag))], i + 1
 
     # ---- hide ----
     if text.startswith("hide "):
@@ -383,7 +412,7 @@ def handle(items, i, ind, ctx, path):
         name, _at = split_modifiers(rest)
         tag = name.split()[0] if name.split() else "sprite"
         ctx.tick("hide")
-        return ['S.hide("%s")' % tag], i + 1
+        return [I('S.hide("%s")' % tag)], i + 1
 
     # ---- 音频 ----
     for kw, key in (("play music", "bgm"), ("play sound", "se"),
@@ -392,36 +421,41 @@ def handle(items, i, ind, ctx, path):
             rest = text[len(kw):].strip()
             fname = first_string(rest)
             if not fname:
-                ctx.note(path, ln, "音频路径看不懂", text)
-                return ["<-- 转换不了：%s -->" % text], i + 1
+                # 没引号：多半是 define audio.xxx 的别名，或后面跟了 fadein 参数
+                tok = rest.split()[0] if rest.split() else ""
+                if tok in ctx.audio_aliases:
+                    fname = ctx.audio_aliases[tok]
+                else:
+                    ctx.note(path, ln, "音频路径看不懂", text)
+                    return [I("<-- 转换不了：%s -->" % text)], i + 1
             rel = asset_of(ctx, fname, ln, text)
             ctx.tick(key)
             if key == "bgm":
-                return ['S.play("%s")' % rel], i + 1
-            return ['S.sound("%s")' % rel], i + 1
+                return [I('S.play("%s")' % rel)], i + 1
+            return [I('S.sound("%s")' % rel)], i + 1
 
     if text.startswith("stop music") or text.startswith("stop audio"):
         ctx.tick("stop")
-        return ['S.stop("bgm")'], i + 1
+        return [I('S.stop("bgm")')], i + 1
 
     if text.startswith("voice "):
         fname = first_string(text[6:])
         rel = asset_of(ctx, fname, ln, text) if fname else ""
         ctx.tick("voice")
-        return ['S.voice("%s")' % rel], i + 1
+        return [I('S.voice("%s")' % rel)], i + 1
 
     # ---- 跳转 / 返回 ----
     if text.startswith("jump "):
         ctx.tick("jump")
-        return ['S.jump("%s")' % text[5:].strip()], i + 1
+        return [I('S.jump("%s")' % text[5:].strip())], i + 1
     if text in ("return", "return()"):
         ctx.tick("return")
-        return ["S.end()"], i + 1
+        return [I("S.end()")], i + 1
 
     # ---- $ 语句 ----
     m = RE_SET.match(text)
     if m:
-        return handle_python(ctx, path, ln, m.group(1).strip()), i + 1
+        return handle_python(ctx, path, ln, m.group(1).strip(), ind), i + 1
 
     # ---- 台词 ----
     stmt = re.sub(r'\s+with\s+[\w.]+$', "", text).strip()
@@ -430,12 +464,12 @@ def handle(items, i, ind, ctx, path):
         who = ctx.chars[m.group("who")]
         expr = render_text(ctx, path, ln, m.group("text"), text)
         ctx.tick("台词")
-        return ['%s%s' % (who, expr)], i + 1
+        return [I("%s %s" % (who, expr))], i + 1
     m = RE_SAY_BARE.match(stmt) or RE_SAY_VERB.match(stmt)
     if m:
         expr = render_text(ctx, path, ln, m.group("text"), text)
         ctx.tick("旁白")
-        return [expr], i + 1
+        return [I(expr)], i + 1
 
     # ---- 明确知道可以忽略的 ----
     low = text.lower()
@@ -451,33 +485,34 @@ def handle(items, i, ind, ctx, path):
     return handle_unknown(items, i, ind, ctx, path, text, ln)
 
 
-def handle_python(ctx, path, ln, code):
+def handle_python(ctx, path, ln, code, ind=0):
     """$ 后面那一小段 Python。"""
-    if "renpy.input" in code or "renpy.input" in code:
+    I = lambda s: (" " * out_col(ind)) + s
+    if "renpy.input" in code:
         m = re.search(r'renpy\.input\s*\(\s*(.*?)\)\s*$', code)
         prompt = ""
         if m:
             s = first_string(m.group(1))
             prompt = s or ""
         ctx.tick("询问输入")
-        return ['STM.Q = "%s"' % mdify(prompt), "Question:"]
+        return [I('STM.Q = "%s"' % mdify(prompt)), I("Question:")]
     m = RE_ASSIGN.match(code)
     if m:
         name, op, value = m.group(1), m.group(2), m.group(3)
         expr = python_expr(ctx, value)
         if op == "=":
             ctx.tick("变量赋值")
-            return ["SET %s = %s" % (name, expr)]
+            return [I("SET %s = %s" % (name, expr))]
         if op == "+=":
-            return ["SET %s = %s + (%s)" % (name, name, expr)]
+            return [I("SET %s = %s + (%s)" % (name, name, expr))]
         if op == "-=":
-            return ["SET %s = %s - (%s)" % (name, name, expr)]
+            return [I("SET %s = %s - (%s)" % (name, name, expr))]
         if op == "*=":
-            return ["SET %s = %s * (%s)" % (name, name, expr)]
+            return [I("SET %s = %s * (%s)" % (name, name, expr))]
         if op == "/=":
-            return ["SET %s = %s / (%s)" % (name, name, expr)]
+            return [I("SET %s = %s / (%s)" % (name, name, expr))]
     ctx.note(path, ln, "$ 语句没看懂", code)
-    return ["<-- 转换不了：$ %s -->" % code]
+    return [I("<-- 转换不了：$ %s -->" % code)]
 
 
 def python_expr(ctx, value):
@@ -512,33 +547,49 @@ def handle_unknown(items, i, ind, ctx, path, text, ln):
     ctx.note(path, ln, why, text)
     ctx.tick("无法转换")
     block = [text] + [t for _ind, t, _ln in items[i + 1:j]]
-    out = ["<-- 没能转换（%s）：" % why]
-    out += ["     " + b for b in block[:6]]
+    # 每行独立成单行注释。STMG 注释是 <-- ... -->（re.S 跨行匹配），
+    # 若整块写成多行，内层自带的 --> 会让正则提前闭合、把代码当真语句。
+    # 所以逐行输出，并把行内可能出现的 --> 转义掉。
+    out = []
+    for b in block[:6]:
+        safe = b.replace("-->", "→")
+        out.append((" " * out_col(ind)) + "<-- 没能转换（%s）：%s -->" % (why, safe))
     if len(block) > 6:
-        out.append("     ... 还有 %d 行" % (len(block) - 6))
-    out.append("-->")
+        out.append((" " * ind) + "<-- ... 还有 %d 行（详见 转换报告.md）-->" % (len(block) - 6))
     return out, j
 
 
 def emit_chain(ctx, chain, pad):
-    """if / elif / else 链 → STMG 的 If / Else 嵌套。"""
+    """if / elif / else 链 → STMG 的 If / Else 嵌套。
+
+    pad 是这条 if 链在输出里的绝对缩进（调用方传 out_col(ind)，整数列号）。
+    body 里的语句各自带好了绝对缩进（来自递归的 conv/handle），
+    所以这里不再给 body 加缩进，只把 If / Else 放到 pad 这一列。
+
+    STMG 没有 Elif，所以 elif 展开成「Else: 后面跟一个 If」；最终的
+    else 分支直接是「Else: 后面跟正文」。关键点：整条链里每个 else 只发
+    一次 Else: —— 这里把 Else: 当作「本条之前的间隔符」在每条（首条除外）
+    开头处发，None 分支自己不再额外发，避免重复 Else:。
+    """
     out = []
-    cond, body, ln = chain[0]
-    if cond is None:
+    P = " " * pad
+    for k, (cond, body, ln) in enumerate(chain):
+        if cond is None:
+            # else 分支：总会有 Else: + 正文（正文可能为空，也照发）
+            out.append(P + "Else:")
+            out.extend(body)
+            continue
         if not body:
-            return out
-        out.append(pad + "Else:")
-        out.extend(pad + "    " + b if b else "" for b in body)
-        return out
-    if not body:
-        ctx.note("", ln, "空分支，已跳过", "If %s" % cond)
-        return out
-    out.append(pad + "If %s:" % stm_cond(cond))
-    out.extend((pad + "    " + b if b else "") for b in body)
-    rest = chain[1:]
-    if rest:
-        out.append(pad + "Else:")
-        out.extend(emit_chain(ctx, rest, pad + "    "))
+            # 空 if 分支：整段跳过，不留悬空的 If（前面若已写了 Else:
+            # 间隔符也要一并撤掉，否则会出现 Else: 没有后续 If 的怪结构）
+            ctx.note("", ln, "空分支，已跳过", "If %s" % cond)
+            if out and out[-1] == P + "Else:":
+                out.pop()
+            continue
+        if k > 0:
+            out.append(P + "Else:")
+        out.append(P + "If %s:" % stm_cond(cond))
+        out.extend(body)
     return out
 
 
@@ -553,6 +604,7 @@ def stm_cond(cond):
 
 
 def emit_menu(items, i, ind, ctx, path):
+    pad = " " * out_col(ind)
     j, b_ind = body_span(items, i, ind)
     body = items[i + 1:j]
     ln = items[i][2]
@@ -591,22 +643,23 @@ def emit_menu(items, i, ind, ctx, path):
 
     out = []
     if caption:
-        out.append('"%s"' % mdify(caption))
+        out.append(pad + '"%s"' % mdify(caption))
         out.append("")
-    out.append("Choose:")
+    out.append(pad + "Choose:")
     for cap, _sub, _cl in options:
-        out.append('    "%s"' % mdify(cap))
+        out.append(pad + '    "%s"' % mdify(cap))
     out.append("")
     for cap, sub, cln in options:
-        out.append('If "%s":' % mdify(cap))
+        out.append(pad + 'If "%s":' % mdify(cap))
         if sub:
             sub_ind = sub[0][0]
             body_out = conv(sub, 0, sub_ind, ctx, path)
             if not body_out:
-                body_out = ['"（这个选项在原剧本里没有内容）"']
-            out.extend("    " + b if b else "" for b in body_out)
+                body_out = [pad + '    "（这个选项在原剧本里没有内容）"']
+            # body_out 里每条已经带好自己的绝对缩进，直接拼接
+            out.extend(body_out)
         else:
-            out.append('    "（这个选项在原剧本里没有内容）"')
+            out.append(pad + '    "（这个选项在原剧本里没有内容）"')
         out.append("")
     ctx.tick("选择支", len(options))
     return out, j
@@ -688,6 +741,10 @@ def scan_defs(path, ctx):
         m = RE_IMAGE.match(t)
         if m:
             ctx.images[" ".join(m.group(1).split())] = m.group(2)
+            continue
+        m = RE_DEF_AUDIO.match(t)
+        if m:
+            ctx.audio_aliases[m.group(1)] = m.group(2)
             continue
 
 

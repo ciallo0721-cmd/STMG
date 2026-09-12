@@ -22,3 +22,6 @@ projects/*
 *.swp
 Thumbs.db
 desktop.ini
+
+# 项目记忆 / 工作区数据（不进仓库）
+.workbuddy/

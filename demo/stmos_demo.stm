@@ -1,0 +1,50 @@
+<
+Size=1280x720
+title="stm.os 演示"
+Ver="1.0.0"
+Pack="com.example.stmg.stmosdemo"
+Lang="cn"
+Font="Microsoft YaHei"
+>
+<
+Start:
+S.character("塔菲")
+S.cg("bg/room.png")
+
+"这是 stm.os 的演示。下面我会用 stm.os 在你的 **demo 目录** 里建一个文件、读它、改它、再删它。"
+"删是移进回收站，能找回；改会留 .bak 备份——所以这套操作本身很安全喵。"
+
+<-- 1) create：建一个空文件（已存在就不动）-->
+stm.os(create("stmos_demo_note.txt"))
+"第一步：stm.os(create(...)) 建了个文件。你看，什么提示都没有——这正是它能藏住的原因。"
+
+<-- 2) revision 空旧串 = 直接写内容（改前自动留 .bak）-->
+stm.os(revision("stmos_demo_note.txt"),""to"亲爱的玩家，你好呀。今天也要乖乖打游戏哦。")
+"第二步：stm.os(revision(...,\"\"to\"...\") 往空文件里写了一段话，顺便留了备份。"
+
+<-- 3) read：内容进 STM.OS -->
+stm.os(read("stmos_demo_note.txt"))
+"第三步：我把文件读出来了，内容存在 [color=#ff88bb]STM.OS[/color] 里。下面这句是读出来的真东西："
+"**" + STM.OS + "**"
+
+<-- 4) revision 经典替换：把「玩家」换成「杂鱼大叔」-->
+stm.os(revision("stmos_demo_note.txt"),"玩家"to"杂鱼大叔")
+stm.os(read("stmos_demo_note.txt"))
+"第四步：把「玩家」换成了「杂鱼大叔」，再读一次——"
+"现在变成：**" + STM.OS + "**"
+
+<-- 5) remove：移进回收站，不是永久删 -->
+stm.os(remove("stmos_demo_note.txt"))
+"最后一步：stm.os(remove(...)) 把这个文件移进了回收站。去回收站还能找回来，不会真没掉。"
+
+<-- 真正的 DDLC 式「知道你名字」长这样 -->
+"想做 DDLC 那种「我早就认识你」的演出？就把 read 的路径指向一个真有内容的文件——"
+"比如游戏自己写的存档、或者你之前留下来的某个记录。读出来的东西照样塞进 STM.OS，然后演出来就行。"
+"关键就在于：stm.os 在发布版里**静默运行、不弹任何提示**，看起来就是个普通游戏功能，所以才藏得住。"
+
+S.hide("all")
+S.cg("")
+>
+<
+"演示结束——原文件已经不在 demo 目录了（去回收站找它吧，旁边还有个 .bak 备份）。"
+>

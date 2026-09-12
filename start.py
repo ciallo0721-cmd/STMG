@@ -172,8 +172,9 @@ def main(argv):
         return run_auto(script, options, pick, dev_mode)
 
     if script.error_count():
-        print("剧本有 %d 个错误，先修好再开窗口：" % script.error_count())
-        print_issues(script)
+        # 像 Ren'Py 一样：不在命令行里报错，而是开游戏窗口显示错误界面
+        from stmg.gui import App
+        App(script, options, dev_mode, script_errors=script.issues).run()
         return 1
 
     from stmg.gui import App

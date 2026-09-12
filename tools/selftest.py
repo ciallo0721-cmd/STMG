@@ -5,7 +5,8 @@
     python tools/selftest.py
 
 覆盖：语法解析 / 无头推进（两条分支）/ 加解密往返 / 篡改检测 /
-      资源包打包与读取 / 界面能不能画出一帧（用 SDL 的 dummy 驱动，不弹窗口）
+      资源包打包与读取 / 界面能不能画出一帧（用 SDL 的 dummy 驱动，不弹窗口）/
+      stm.os 受控文件操作（读 / 建 / 改 + 备份 / 移回收站）
 """
 
 import os
@@ -192,6 +193,38 @@ def test_project():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_errscreen():
+    print("\n== 8. 游戏内错误界面（解析错误不进 CLI）==")
+    try:
+        from stmg.gui import App, ERROR
+    except ImportError as e:
+        check("pygame 可用", False, str(e))
+        return
+    broken = os.path.join(ROOT, "projects", "YandereContract2.0", "script.stm")
+    if not os.path.isfile(broken):
+        check("找到带错误的剧本", False, "缺 projects/YandereContract2.0/script.stm")
+        return
+    sc = parser.parse_file(broken)
+    check("剧本确实有 20 个错误", sc.error_count() == 20, str(sc.error_count()))
+    try:
+        app = App(sc, None, dev_mode=True, script_errors=sc.issues)
+    except Exception as e:                                 # noqa: BLE001
+        check("带错误的剧本也能开窗口", False, "%s: %s" % (type(e).__name__, e))
+        return
+    check("开窗口后直接进错误界面", app.state == ERROR, "state=%s" % app.state)
+    check("错误模式是 script", app.error_mode == "script")
+    rows = app._error_rows()
+    blob = "\n".join(t for t, _ in rows)
+    check("行号进了界面", "行 2510" in blob and "行 3919" in blob)
+    check("原始信息进了界面", "If 的正文既没缩进也没有 EndIf" in blob)
+    check("提示也进了界面", "对照 README 的语法表" in blob)
+    try:
+        app.draw()
+        check("错误界面画了一帧没崩", True)
+    except Exception as e:                                 # noqa: BLE001
+        check("错误界面画了一帧没崩", False, "%s: %s" % (type(e).__name__, e))
+
+
 def test_launcher():
     print("\n== 7. 启动器能起来 ==")
     try:
@@ -208,6 +241,46 @@ def test_launcher():
         check("主界面构建成功", False, "%s: %s" % (type(e).__name__, e))
 
 
+def test_stmos():
+    print("\n== 8. stm.os 受控文件操作 ==")
+    from stmg import stmos
+    sc = parser.parse_text("\n".join([
+        "<", "title=\"t\"", ">",
+        "<", "Start:",
+        "stm.os(create(\"a.txt\"))",
+        "stm.os(read(\"a.txt\"))",
+        "stm.os(revision(\"a.txt\"),\"x\"to\"y\")",
+        "stm.os(remove(\"a.txt\"))",
+        ">",
+        "<", "\"e\"", ">",
+    ]))
+    nodes = [s for s in sc.walk() if s["k"] == "stm_os"]
+    check("解析出 4 个 stm_os 语句", len(nodes) == 4, str(len(nodes)))
+    check("操作名解析正确",
+          [n["op"] for n in nodes] == ["create", "read", "revision", "remove"])
+    check("revision 的 find/replace 解析对",
+          nodes[2]["find"] == "x" and nodes[2]["replace"] == "y")
+
+    tmp = tempfile.mkdtemp()
+    try:
+        f = os.path.join(tmp, "t.txt")
+        ok, _ = stmos.create_file(f)
+        check("create 建出空文件", ok and os.path.isfile(f))
+        ok, content = stmos.read_file(f)
+        check("read 空文件得到空串", ok and content == "")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("axxb")
+        ok, _ = stmos.revision_file(f, "x", "y")
+        with open(f, encoding="utf-8") as fh:
+            data = fh.read()
+        check("revision 替换生效", data == "ayyb", data)
+        check("revision 留了 .bak 备份", os.path.isfile(f + ".bak"))
+        ok, _ = stmos.remove_file(f)
+        check("remove 后原文件不在了", ok and not os.path.isfile(f))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print("STMG 自检")
     sc = test_parse()
@@ -216,7 +289,9 @@ def main():
     test_pack()
     test_gui(sc)
     test_project()
+    test_errscreen()
     test_launcher()
+    test_stmos()
     print("\n" + "=" * 50)
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
     if FAIL:

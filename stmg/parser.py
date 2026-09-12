@@ -26,6 +26,12 @@ BLOCK_OPEN_RE = re.compile(r"^<(?P<name>[A-Za-z]*)$")
 BLOCK_CLOSE_RE = re.compile(r"^</?(?P<name>[A-Za-z]*)>$")
 
 CALL_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\((.*)\)\s*$", re.S)
+# stm.os(...) —— 受控文件操作。外层只认 stm.os，内层再拆出 操作(path) 和可选的 ,"旧"to"新"
+STM_OS_RE = re.compile(r"^\s*stm\.os\s*\((.*)\)\s*$", re.I | re.S)
+STM_OS_INNER_RE = re.compile(
+    r'^\s*([A-Za-z_]\w*)\s*\(\s*"([^"]*)"\s*\)'
+    r'(?:\s*,\s*"([^"]*)"\s*to\s*"([^"]*)"\s*)?$',
+    re.I | re.S)
 LABEL_RE = re.compile(r"^([A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff]*)\s*:\s*$")
 IF_RE = re.compile(r"^If\s+(.+?)\s*:\s*$", re.I)
 ELSE_RE = re.compile(r"^Else\s*:\s*$", re.I)
@@ -33,8 +39,10 @@ CHOOSE_RE = re.compile(r"^Choose\s*:\s*$", re.I)
 QUESTION_RE = re.compile(r"^Question\s*:\s*(.*)$", re.I)
 SET_RE = re.compile(r"^SET\s+([\w.]+)\s*=\s*(.*)$", re.I)
 ASSIGN_RE = re.compile(r"^([A-Za-z_][\w.]*)\s*=\s*(.+)$", re.S)
-SAY_RE = re.compile(r'^(?P<who>[^"\s][^"]*?)\s*[:：]?\s*(?P<text>".*")$', re.S)
-BARE_SAY_RE = re.compile(r'^(".*")$', re.S)
+# 台词文本支持 "…" + 变量 这种拼接（运行时 _say_text 会 eval_expr 求值）。
+# 所以文本部分用 ".* 吃掉到行尾（含 + 号），而不是钉死成单个引号串。
+SAY_RE = re.compile(r'^(?P<who>[^"\s][^"]*?)\s*[:：]?\s*(?P<text>".*)$', re.S)
+BARE_SAY_RE = re.compile(r'^(".*)$', re.S)
 HEADER_KV_RE = re.compile(r"^([A-Za-z_]\w*)\s*=\s*(.*)$")
 # 一整行只由 "字符串" 和冒号组成 —— 这才是 Choose 的选项行
 OPTIONS_RE = re.compile(r'^\s*(?:"[^"]*"\s*[:：]?\s*)+\s*$')
@@ -303,6 +311,37 @@ def _parse_lines(lines, issues):
                 pos[0] += 1
                 stmts.append({"k": "set", "name": m.group(1),
                               "expr": m.group(2).strip(), "line": n})
+                continue
+
+            # --- stm.os(...) —— 受控文件操作（DDLC 式彩蛋用）---
+            m = STM_OS_RE.match(s)
+            if m:
+                inner = m.group(1)
+                im = STM_OS_INNER_RE.match(inner)
+                if not im:
+                    issues.append(Issue(
+                        n, "stm.os 的参数看不懂：%s" % inner[:40],
+                        '参考 STM.os(read("路径")) / revision("路径"),"旧"to"新"'))
+                    pos[0] += 1
+                    continue
+                op, fpath, find, replace = im.group(1), im.group(2), \
+                    im.group(3), im.group(4)
+                op = op.lower()
+                if op not in ("read", "create", "remove", "revision"):
+                    issues.append(Issue(
+                        n, "stm.os 不认识的操作：%s" % op,
+                        "只能用 read / create / remove / revision"))
+                    pos[0] += 1
+                    continue
+                if op == "revision" and find is None:
+                    issues.append(Issue(
+                        n, "revision 需要写成 ,\"旧内容\"to\"新内容\"",
+                        '例：stm.os(revision("x"),"a"to"b")'))
+                    pos[0] += 1
+                    continue
+                stmts.append({"k": "stm_os", "op": op, "path": fpath,
+                              "find": find, "replace": replace, "line": n})
+                pos[0] += 1
                 continue
 
             # --- 函数调用 S.play(...) / R.api(...) / STM.display(...) ---

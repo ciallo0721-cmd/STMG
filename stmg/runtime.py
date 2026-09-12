@@ -23,7 +23,7 @@ import os
 import re
 import types
 
-from . import pack, stdlib_api
+from . import pack, stdlib_api, stmos
 from .errors import STMFatal, format_exception
 from .markdown import strip_quotes
 
@@ -69,7 +69,7 @@ class Runtime(object):
         self.dev_mode = dev_mode
         self.root = os.path.dirname(os.path.abspath(script.path))
 
-        self.STM = types.SimpleNamespace(Q="", ANSWER="", NAME="", API=None)
+        self.STM = types.SimpleNamespace(Q="", ANSWER="", NAME="", API=None, OS="")
         self.vars = {"STM": self.STM, "R": types.SimpleNamespace(RESULT=None)}
         self.names = {}
         self.chosen = set()
@@ -226,6 +226,9 @@ class Runtime(object):
             elif k == "call":
                 yield from self.do_call(s)
 
+            elif k == "stm_os":
+                yield from self.do_stmos(s)
+
     # ------------------------------------------------------------------ #
     # 内建函数
     # ------------------------------------------------------------------ #
@@ -300,6 +303,45 @@ class Runtime(object):
                 yield {"t": "toast", "text": "R.%s 这个函数还没实现" % s["method"]}
         else:
             yield {"t": "toast", "text": "不认识的调用：%s" % s["method"]}
+
+    def do_stmos(self, s):
+        """stm.os 受控文件操作。设计上**静默**——发布版不弹任何提示，
+        这样在玩家机器上做 DDLC 式演出时才不会「穿帮」；只有开发模式
+        会把失败原因用 toast 打出来方便调试。"""
+        op = (s.get("op") or "").lower()
+        path = (s.get("path") or "").replace("\\", "/")
+        if not path:
+            if self.dev_mode:
+                yield {"t": "toast", "text": "stm.os: 没给路径"}
+            return
+        # 绝对路径直接用；相对路径按项目根目录解析
+        p = path if os.path.isabs(path) else self.resolve(path)
+
+        if op == "read":
+            ok, content = stmos.read_file(p)
+            self.STM.OS = content if ok else ""
+            self.vars["STM.OS"] = self.STM.OS
+            if not ok and self.dev_mode:
+                yield {"t": "toast", "text": "stm.os read 失败：%s" % p}
+            return
+
+        if op == "create":
+            ok, msg = stmos.create_file(p)
+            if not ok and self.dev_mode:
+                yield {"t": "toast", "text": "stm.os create：%s" % msg}
+            return
+
+        if op == "remove":
+            ok, msg = stmos.remove_file(p)
+            if not ok and self.dev_mode:
+                yield {"t": "toast", "text": "stm.os remove：%s" % msg}
+            return
+
+        if op == "revision":
+            ok, msg = stmos.revision_file(p, s.get("find"), s.get("replace"))
+            if not ok and self.dev_mode:
+                yield {"t": "toast", "text": "stm.os revision：%s" % msg}
+            return
 
     # ------------------------------------------------------------------ #
     # 小工具

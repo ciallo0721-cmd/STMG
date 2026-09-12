@@ -60,7 +60,8 @@ class Settings(object):
 
 
 class App(object):
-    def __init__(self, script, options=None, dev_mode=True, auto=False):
+    def __init__(self, script, options=None, dev_mode=True, auto=False,
+                 script_errors=None):
         pygame.init()
         self.script = script
         self.dev_mode = dev_mode
@@ -76,7 +77,18 @@ class App(object):
         for k, v in self.settings.vol.items():
             self.audio.set_volume(k, v)
 
-        self.session = Session(script, options, dev_mode)
+        # 解析期错误：在游戏窗口里显示（Ren'Py 风格），而不是丢到命令行
+        self.script_errors = list(script_errors) if script_errors else []
+        self.error_mode = "script" if self.script_errors else "runtime"
+        self.error_scroll = 0
+
+        self.session = None
+        self.error_text = ""
+        try:
+            self.session = Session(script, options, dev_mode)
+        except Exception as e:                       # noqa: BLE001
+            self.error_text = "引擎初始化失败：%s\n%s" % (e, format_exception(e))
+
         self.state = TITLE
         self.buttons = []
         self.reveal = 0.0
@@ -86,9 +98,12 @@ class App(object):
         self.input_text = ""
         self.backlog_scroll = 0
         self.overlay_from = TITLE
-        self.error_text = ""
         self.pending_toasts = []
         self.running = True
+
+        # 有解析错误：直接进错误界面，窗口照开，但不进标题 / 游戏
+        if self.script_errors:
+            self.state = ERROR
 
     # ------------------------------------------------------------------ #
     # 窗口
@@ -228,6 +243,9 @@ class App(object):
                     self.backlog_scroll += -3 if event.button == 4 else 3 if event.button == 5 else 0
                     self.backlog_scroll = max(0, min(self.backlog_scroll,
                                                      max(0, len(self.session.runtime.history) - 6)))
+                if event.type == pygame.MOUSEWHEEL and self.state == ERROR \
+                        and self.error_mode == "script":
+                    self.error_scroll = max(0, self.error_scroll - event.y * 3)
                 continue
 
             if self.state == CHOOSE:
@@ -250,6 +268,11 @@ class App(object):
 
     def on_key(self, event):
         k = event.key
+        # 解析错误界面：回车 / Esc 直接关窗口（没有可继续的游戏）
+        if self.state == ERROR and self.error_mode == "script":
+            if k in (pygame.K_RETURN, pygame.K_ESCAPE):
+                self.running = False
+            return
         if k == pygame.K_ESCAPE:
             if self.state in (MENU, BACKLOG, SAVELOAD):
                 self.state = self.overlay_from
@@ -661,11 +684,78 @@ class App(object):
             self.state = ERROR
 
     # ------------------------------------------------------------------ #
+    def _error_rows(self):
+        """解析错误界面要逐行显示的内容，供 draw_error 与测试复用。"""
+        max_chars = max(8, (self.W - 80) // 17)
+
+        def clip(text):
+            return text if len(text) <= max_chars else text[:max_chars - 1] + "…"
+
+        rows = []
+        for i in self.script_errors:
+            tag = "错误" if i.level == "error" else "提示"
+            pos = "行 %d" % i.line if i.line else "全局"
+            head = "[%s] %s  %s" % (tag, pos, i.message)
+            color = (255, 200, 200) if i.level == "error" else (210, 214, 180)
+            rows.append((clip(head), color))
+            if self.dev_mode and i.hint:
+                rows.append((clip("    -> " + i.hint), (175, 188, 214)))
+            if i.level == "error":
+                rows.append(("", color))
+        return rows
+
     def draw_error(self):
-        self.base.fill((30, 20, 26))
-        f = self.fonts.get(26, bold=True)
-        t = f.render("出错了", True, (255, 120, 120))
-        self.base.blit(t, (40, 34))
+        self.base.fill((20, 18, 26))
+        f_title = self.fonts.get(28, bold=True)
+        t = f_title.render("An error has occurred.", True, (255, 110, 110))
+        self.base.blit(t, (40, 30))
+
+        if self.error_mode == "script" and self.script_errors:
+            self.buttons = []
+            errs = [i for i in self.script_errors if i.level == "error"]
+            warns = [i for i in self.script_errors if i.level == "warn"]
+            f_sub = self.fonts.get(20)
+            if self.dev_mode:
+                sub = "剧本解析发现 %d 个错误" % len(errs)
+                if warns:
+                    sub += "、%d 条提示" % len(warns)
+                sub += "，无法启动。下面是详细列表："
+            else:
+                sub = "游戏剧本存在 %d 处错误，无法启动，请联系作者修复。" % len(errs)
+            s = f_sub.render(sub, True, (235, 225, 225))
+            self.base.blit(s, (40, 78))
+
+            f2 = self.fonts.get(17)
+            line_h = 24
+            view_top = 120
+            view_bottom = self.H - 96
+
+            rows = self._error_rows()
+            total = len(rows) * line_h
+            max_scroll = max(0, total - (view_bottom - view_top))
+            self.error_scroll = min(self.error_scroll, max_scroll)
+            y = view_top - self.error_scroll
+            for text, color in rows:
+                if y + line_h < view_top:
+                    y += line_h
+                    continue
+                if y > view_bottom:
+                    break
+                if text:
+                    surf = f2.render(text, True, color)
+                    self.base.blit(surf, (40, y))
+                y += line_h
+
+            r = pygame.Rect(self.W - 150, self.H - 64, 110, 40)
+            self.buttons.append(render.Button(
+                r, "退出", lambda: setattr(self, "running", False)))
+            self.draw_buttons(18)
+            hint = self.fonts.get(15).render(
+                "回车 / Esc 退出  ·  滚轮翻看", True, (180, 160, 160))
+            self.base.blit(hint, (40, self.H - 40))
+            return
+
+        # ---- 运行时致命错误（原有逻辑）----
         if not self.dev_mode:
             msg = self.fonts.get(20).render(
                 "游戏遇到了问题，细节已写进日志。按回车继续。", True, (230, 220, 220))

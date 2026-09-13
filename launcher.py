@@ -438,11 +438,19 @@ class Launcher(ctk.CTk):
     def _open_visual_editor(self, p):
         try:
             ed = VisualEditor(self, p)
+            self._editor = ed          # 持住引用，防止窗口被垃圾回收
             n = len(ed.lines) if hasattr(ed, "lines") else -1
             self.log_line("可视化编辑：窗口已创建，加载 %d 行（若此条没出现就是建窗口时卡住/报错）" % n)
         except Exception as e:                         # noqa: BLE001
             # tkinter 回调异常只进 stderr，玩家看不到——这里兜底写进日志
             self.log_line("可视化编辑打不开：%s: %s" % (type(e).__name__, e))
+
+    def report_callback_exception(self, exc, val, tb):
+        """tkinter 回调的任何未捕获异常，直接写进日志区（不再只进 stderr）。"""
+        import traceback as _tb
+        self.log_line("回调异常：%s: %s | %s"
+                      % (type(val).__name__, val,
+                         _tb.format_tb(tb)[-1].strip() if tb else ""))
 
     def open_folder(self):
         if not self._need():
@@ -646,6 +654,27 @@ class VisualEditor(BaseDialog):
         self.tip.pack(fill="x", padx=14, pady=(4, 12), side="bottom")
         self.app.log_line("可视化编辑：②组件搭建 OK")
         self.reload_file()
+        # grab 保险：窗口销毁时必须释放模态 grab，否则整个应用点哪都没反应
+        self.bind("<Destroy>", self._safe_destroy, add="+")
+        self.after(300, self._grab_status)
+
+    def _grab_status(self):
+        try:
+            self.app.log_line("可视化编辑：grab 归属 = %s" % (self.grab_current(),))
+        except Exception as e:                         # noqa: BLE001
+            self.app.log_line("可视化编辑：grab 查询失败 %r" % e)
+
+    def _safe_destroy(self, ev=None):
+        if ev is not None and ev.widget is not self:
+            return      # 子组件销毁也会冒泡，只在自己销毁时处理
+        try:
+            self.grab_release()
+        except Exception:                              # noqa: BLE001
+            pass
+        try:
+            self.app.log_line("可视化编辑：窗口已关闭")
+        except Exception:                              # noqa: BLE001
+            pass
 
     # ---- 文件 ---- #
     def reload_file(self):

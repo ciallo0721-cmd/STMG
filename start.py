@@ -102,6 +102,10 @@ def run_auto(script, options, pick=0, dev_mode=True):
         elif t == "question":
             print("  >>> 询问：%s -> 自动回答「测试」" % blk.get("prompt"))
             sess.answer("测试")
+        elif t == "transition":
+            # 转场只是画面演出，无头模式下不停留，直接继续推进
+            sess.next_block()
+            continue
         elif t == "fatal":
             print("\n!! 运行出错：" + blk.get("message", ""))
             if blk.get("trace"):

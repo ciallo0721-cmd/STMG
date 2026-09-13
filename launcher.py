@@ -431,8 +431,15 @@ class Launcher(ctk.CTk):
         if not self._need():
             return
         p = proj.script_of(self.current["path"])
+        # 不在按钮回调里同步建窗口：挪到 after 里，卡死/报错都能定位
+        self.log_line("可视化编辑：准备打开 %s" % p)
+        self.after(10, self._open_visual_editor, p)
+
+    def _open_visual_editor(self, p):
         try:
-            VisualEditor(self, p)
+            ed = VisualEditor(self, p)
+            n = len(ed.lines) if hasattr(ed, "lines") else -1
+            self.log_line("可视化编辑：窗口已创建，加载 %d 行（若此条没出现就是建窗口时卡住/报错）" % n)
         except Exception as e:                         # noqa: BLE001
             # tkinter 回调异常只进 stderr，玩家看不到——这里兜底写进日志
             self.log_line("可视化编辑打不开：%s: %s" % (type(e).__name__, e))
@@ -574,6 +581,7 @@ class VisualEditor(BaseDialog):
 
     def __init__(self, app, path):
         super().__init__(app, "可视化编辑 —— %s" % os.path.basename(path), 980, 640)
+        self.app.log_line("可视化编辑：①窗口基座 OK")
         self.resizable(True, True)
         self.app = app
         self.path = path
@@ -636,6 +644,7 @@ class VisualEditor(BaseDialog):
                                 font=app.f(11.5), text_color=SUB,
                                 justify="left", anchor="w")
         self.tip.pack(fill="x", padx=14, pady=(4, 12), side="bottom")
+        self.app.log_line("可视化编辑：②组件搭建 OK")
         self.reload_file()
 
     # ---- 文件 ---- #
@@ -648,6 +657,7 @@ class VisualEditor(BaseDialog):
             self.destroy()
             return
         self.refresh_list(keep=0)
+        self.app.log_line("可视化编辑：③已加载 %d 行" % len(self.lines))
 
     def refresh_list(self, keep=0):
         self.listbox.delete(0, tk.END)

@@ -1617,7 +1617,12 @@ class VisualEditor(BaseDialog):
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
         hit = self._hit_top(x, y)
         if hit and hit["part"] == "block":
-            self._remove_node(hit["node"])
+            node = hit["node"]
+            if node["t"] == "hat" and (node["label"].lower() == "start"
+                                       or not node.get("emit", True)):
+                self.app.log_line("Start 帽子是剧本入口，不能删喵")
+                return
+            self._remove_node(node)
             self._canvas_render()
 
     def _cv_wheel(self, e):

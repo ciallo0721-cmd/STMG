@@ -581,11 +581,11 @@ class VisualEditor(BaseDialog):
 
     def __init__(self, app, path):
         super().__init__(app, "可视化编辑 —— %s" % os.path.basename(path), 980, 640)
-        self.app.log_line("可视化编辑：①窗口基座 OK")
-        self.resizable(True, True)
         self.app = app
         self.path = path
         self.lines = []
+        self.app.log_line("可视化编辑：①窗口基座 OK")
+        self.resizable(True, True)
 
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=14, pady=(12, 6))

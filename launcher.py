@@ -1301,8 +1301,11 @@ class VisualEditor(BaseDialog):
     def _node_text(self, node):
         t = node["t"]
         if t == "hat":
-            return ("当启动 start.py / bat 时" if node["label"].lower() == "start"
-                    else "当接收到「%s」时" % node["label"])
+            if node["label"].lower() == "start":
+                return "当启动 start.py / bat 时"
+            if not node["label"]:
+                return "（开头段落）"
+            return "当接收到「%s」时" % node["label"]
         if t == "say":
             return ("%s说：%s" % (node["who"], node["text"]) if node.get("who")
                     else "旁白：%s" % node["text"])
@@ -1330,8 +1333,10 @@ class VisualEditor(BaseDialog):
         self._hits = []
         self._zones = []
         x0, y = 24, 20
+        self._last_bottom = 0
         for hat in self._tree:
             y = self._draw_hat(hat, x0, y) + 30
+            self._last_bottom = y
 
     def _draw_hat(self, hat, x, y):
         cv = self.canvas
@@ -1444,21 +1449,93 @@ class VisualEditor(BaseDialog):
             return (lst, i)
         return None
 
-    def _drop_node_at(self, node, x, y):
-        if node["t"] == "hat":          # 帽子永远在顶层
-            self._tree.append(node)
-            self._canvas_render()
-            return
+    def _find_drop(self, node, x, y):
+        """算 (堆区, 插入序号)；帽子或落空返回 None。"""
+        if node["t"] == "hat":
+            return None
         for z in reversed(self._zones):
             if z["y1"] - 12 <= y <= z["y2"] + 12:
                 idx = sum(1 for cy, _i in z["ys"] if cy < y)
-                z["stack"].insert(min(idx, len(z["stack"])), node)
-                self._canvas_render()
-                return
-        if getattr(self, "_drag_origin", None):
-            lst, i = self._drag_origin
-            lst.insert(i, node)
+                return z, min(idx, len(z["stack"]))
+        return None
+
+    def _drop_node_at(self, node, x, y):
+        f = self._find_drop(node, x, y)
+        if f is None:
+            if node["t"] == "hat":          # 帽子永远在顶层
+                self._tree.append(node)
+            elif getattr(self, "_drag_origin", None):
+                lst, i = self._drag_origin
+                lst.insert(i, node)         # 落不进任何堆：弹回原位
+            self._canvas_render()
+            return
+        z, idx = f
+        z["stack"].insert(idx, node)
         self._canvas_render()
+
+    # ---------- 放置指示器（白色实线包裹轮廓 + 呼吸动画） ---------- #
+    def _drag_start(self):
+        self._dragging = True
+        self._hint_phase = 0
+        try:
+            if getattr(self, "_hint_job", None):
+                self.after_cancel(self._hint_job)
+        except Exception:                      # noqa: BLE001
+            pass
+        self._hint_job = self.after(180, self._hint_anim)
+
+    def _drag_stop(self):
+        self._dragging = False
+        try:
+            if getattr(self, "_hint_job", None):
+                self.after_cancel(self._hint_job)
+        except Exception:                      # noqa: BLE001
+            pass
+        self._hint_job = None
+        self.canvas.delete("hint")
+
+    def _hint_anim(self):
+        if not getattr(self, "_dragging", False):
+            return
+        self._hint_phase += 1
+        self._hint_draw()
+        self._hint_job = self.after(180, self._hint_anim)
+
+    def _show_drop_hint(self, node, x, y):
+        cv = self.canvas
+        cv.delete("hint")
+        f = self._find_drop(node, x, y)
+        if f is None:
+            if node["t"] == "hat" and getattr(self, "_last_bottom", 0):
+                y0 = self._last_bottom + 4
+                self._hint_geom = (24, y0, 320, y0 + 28)
+            else:
+                self._hint_geom = None
+                return
+        else:
+            z, idx = f
+            if idx == 0 or not z["ys"]:
+                y0 = z["y1"]
+            else:
+                y0 = z["ys"][idx - 1][0] + 13     # 上一个积木的中点偏下半格
+            y0 = max(y0, z["y1"])
+            h = 34 if node["t"] in ("if", "else", "choose") else 24
+            self._hint_geom = (z["x1"] + 10, y0, z["x1"] + 310, y0 + h)
+        self._hint_draw()
+
+    def _hint_draw(self):
+        geom = getattr(self, "_hint_geom", None)
+        if not geom:
+            return
+        cv = self.canvas
+        cv.delete("hint")
+        x1, y1, x2, y2 = geom
+        w = 2 if self._hint_phase % 2 == 0 else 4     # 呼吸：线宽一粗一细
+        cv.create_rectangle(x1, y1, x2, y2, outline="#ffffff", width=w,
+                            tags="hint")
+        for cx, cy in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)):
+            cv.create_rectangle(cx - 3, cy - 3, cx + 3, cy + 3, fill="#ffffff",
+                                outline="", tags="hint")
 
     def _cv_press(self, e):
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
@@ -1467,6 +1544,7 @@ class VisualEditor(BaseDialog):
             node = hit["node"]
             self._drag_origin = self._remove_node(node)
             self._drag_node = node
+            self._drag_start()
 
     def _cv_motion(self, e):
         node = getattr(self, "_drag_node", None)
@@ -1479,12 +1557,13 @@ class VisualEditor(BaseDialog):
                                      tags="ghost")
         self.canvas.create_text(x, y, text=self._node_text(node)[:16],
                                 font=("Microsoft YaHei", 10), tags="ghost")
+        self._show_drop_hint(node, x, y)
 
     def _cv_release(self, e):
         node = getattr(self, "_drag_node", None)
         if not node:
             return
-        self.canvas.delete("ghost")
+        self._drag_stop()
         self._drag_node = None
         self._drop_node_at(node, self.canvas.canvasx(e.x),
                            self.canvas.canvasy(e.y))
@@ -1526,6 +1605,7 @@ class VisualEditor(BaseDialog):
         if node.get("raw") and "消息N" in node["raw"]:
             node["raw"] = node["raw"].replace("消息N", "消息%d" % max(1, n))
         self._pal_node = node
+        self._drag_start()
 
     def _pal_motion(self, e):
         node = getattr(self, "_pal_node", None)
@@ -1541,13 +1621,15 @@ class VisualEditor(BaseDialog):
             self.canvas.create_text(px + 10, py, anchor="w",
                                     text=self._node_text(node)[:14],
                                     font=("Microsoft YaHei", 10), tags="ghost")
+            self._show_drop_hint(node, self.canvas.canvasx(0) + px,
+                                 self.canvas.canvasy(0) + py)
 
     def _pal_release(self, e):
         node = getattr(self, "_pal_node", None)
         if not node:
             return
         self._pal_node = None
-        self.canvas.delete("ghost")
+        self._drag_stop()
         px = e.x_root - self.canvas.winfo_rootx()
         py = e.y_root - self.canvas.winfo_rooty()
         # 不做窗口边界检查：落点靠堆区匹配，落不进任何堆就弹回原位

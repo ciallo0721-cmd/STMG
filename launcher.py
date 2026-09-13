@@ -588,6 +588,11 @@ class VisualEditor(BaseDialog):
     """
 
     def __init__(self, app, path):
+        # CTk 在 Windows 上改标题栏深色时会 withdraw 整个窗口再择机恢复；
+        # 外观模式回调会在窗口显示并 grab 之后再次触发这个流程，把窗口
+        # 永久藏起来（grab 还握着 → 整个应用点哪都没反应）。
+        # 编辑器直接禁用这套标题栏杂技：代价只是标题栏保持浅色。
+        self._deactivate_windows_window_header_manipulation = True
         super().__init__(app, "可视化编辑 —— %s" % os.path.basename(path), 980, 640)
         self.app = app
         self.path = path
@@ -657,6 +662,25 @@ class VisualEditor(BaseDialog):
         # grab 保险：窗口销毁时必须释放模态 grab，否则整个应用点哪都没反应
         self.bind("<Destroy>", self._safe_destroy, add="+")
         self.after(300, self._grab_status)
+        # 显示保险：万一窗口又被 CTk 藏起来，强制拉回；拉不回就放手 grab
+        for ms in (400, 900, 1500):
+            self.after(ms, self._ensure_visible)
+
+    def _ensure_visible(self):
+        try:
+            if self.state() == "withdrawn":
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self.app.log_line("可视化编辑：检测到窗口被隐藏，已强制显示")
+        except Exception:                              # noqa: BLE001
+            pass
+        try:
+            if not self.winfo_viewable():
+                self.grab_release()                    # 宁可不要模态，也不能锁死应用
+                self.app.log_line("可视化编辑：窗口不可见，已释放模态锁")
+        except Exception:                              # noqa: BLE001
+            pass
 
     def _grab_status(self):
         try:

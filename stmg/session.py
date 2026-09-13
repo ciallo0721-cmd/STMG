@@ -90,8 +90,15 @@ class Session(object):
         elif t == "sprite":
             tag = ev.get("tag") or "_"
             if ev.get("path"):
-                self.scene["sprites"][tag] = {"path": ev["path"],
-                                              "pos": ev.get("pos", "center")}
+                self.scene["sprites"][tag] = {
+                    "path": ev["path"],
+                    "pos": ev.get("pos", "center"),
+                    "scale": ev.get("scale"),
+                    "alpha": ev.get("alpha"),
+                    "y": ev.get("y"),
+                    "expr": ev.get("expr"),
+                    "rotate": ev.get("rotate"),
+                }
             else:
                 self.scene["sprites"].pop(tag, None)
         elif t == "bgm":

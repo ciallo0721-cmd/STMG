@@ -520,10 +520,8 @@ class App(object):
             bottom = int(self.H * u["sprite_bottom"])
             img = render.load_image(path)
             if img:
-                img = render.fit_into(img, int(self.W * u["sprite_w"]),
-                                      int(self.H * u["sprite_h"]))
-                self.base.blit(img, (cx - img.get_width() // 2,
-                                     bottom - img.get_height()))
+                render.draw_sprite(self.base, img, cx, bottom, item, u,
+                                   self.W, self.H)
             else:
                 w, h = int(self.W * 0.2), int(self.H * 0.54)
                 r = pygame.Rect(cx - w // 2, bottom - h, w, h)

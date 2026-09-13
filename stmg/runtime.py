@@ -20,6 +20,7 @@
 """
 
 import os
+import random
 import re
 import types
 
@@ -36,6 +37,28 @@ SAFE_BUILTINS = {
     "range": range, "sum": sum, "sorted": sorted, "list": list,
     "dict": dict, "enumerate": enumerate, "zip": zip,
 }
+
+# 回放感知随机：
+#   - 正常跑：把每次随机数写进 answers 流（("rand", v)），随存档一起保存；
+#   - 回放（读档重放）时：RAND 不再新抽，而是按记录原样吐出，
+#     于是带随机分支的剧情重载后走向完全一致。
+# RAND 需要访问「当前 Runtime 的回放状态」，但 SAFE_BUILTINS 是模块级共享表，
+# 所以函数体通过全局 _ACTIVE_RUNTIME 在求值时拿到实例（引擎单线程，安全）。
+_ACTIVE_RUNTIME = None
+
+
+def RAND(a, b):
+    """回放感知随机：返回 [a, b] 闭区间内的整数（含两端）。"""
+    rt = _ACTIVE_RUNTIME
+    if rt is not None:
+        return rt._rand_draw(a, b)
+    return random.randint(int(a), int(b))
+
+
+# 把随机函数加进安全内建表，让剧本表达式里能直接写 RAND(1,6) / randint(1,6)
+SAFE_BUILTINS = dict(SAFE_BUILTINS)
+SAFE_BUILTINS["randint"] = RAND
+SAFE_BUILTINS["RAND"] = RAND
 
 IDENT_RE = re.compile(r"^[A-Za-z_\u4e00-\u9fff]\w*$")
 NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -95,6 +118,8 @@ class Runtime(object):
             return float(expr) if "." in expr else int(expr)
         env = dict(self.vars)
         env.setdefault("STM", self.STM)
+        global _ACTIVE_RUNTIME
+        _ACTIVE_RUNTIME = self
         try:
             return eval(expr, {"__builtins__": SAFE_BUILTINS}, env)
         except NameError:
@@ -106,6 +131,9 @@ class Runtime(object):
             raise STMFatal("除零了：%s" % expr)
         except Exception as e:                       # noqa: BLE001
             raise STMFatal("算式算不出来：%s（%s）" % (expr, e))
+        finally:
+            # 求值结束（无论成功或异常）都清掉，避免指向已失效的 Runtime
+            _ACTIVE_RUNTIME = None
 
     def eval_cond(self, cond):
         cond = (cond or "").strip()
@@ -390,6 +418,25 @@ class Runtime(object):
             setattr(self.STM, name.split(".", 1)[1], value)
             return
         self.vars[name] = value
+
+    def _rand_draw(self, a, b):
+        """回放感知随机：正常跑抽一枚记下，回放时吃记录原样返回。
+
+        与 _take_answer 共用同一条有序回放流 self._replay：choose/question
+        由 _take_answer 消费，rand 由本函数消费，二者按剧本里出现的顺序各取所需。
+        老存档里没有 rand 项时，下一项必然不是 ("rand", ..)，于是退回「现场新抽」，
+        不会越界吞噬 choose/question —— 旧存档依旧能正常重载（只是随机分支不再精确）。
+        """
+        a, b = int(a), int(b)
+        if self._replay_i < len(self._replay):
+            kind, val = self._replay[self._replay_i]
+            if kind == "rand":
+                self._replay_i += 1
+                self.answers.append(("rand", val))
+                return val
+        val = random.randint(a, b)
+        self.answers.append(("rand", val))
+        return val
 
     def _take_answer(self):
         if self._replay_i < len(self._replay):

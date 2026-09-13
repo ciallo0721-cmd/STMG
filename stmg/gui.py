@@ -168,6 +168,12 @@ class App(object):
     def apply_effects(self):
         for ev in self.session.effects:
             self.audio.apply(ev)
+            if ev["t"] == "achieve" and ev.get("is_new"):
+                # 只有「第一次解锁」才弹窗（runtime 已经过滤过，这里再保险一次）
+                self.achieve_popups.append({
+                    "name": ev.get("name", ""),
+                    "ttl": float(self.ui.get("achieve_popup_dur", 3.0)),
+                })
         if self.session.toasts:
             self.pending_toasts.extend(self.session.toasts)
 
@@ -200,6 +206,12 @@ class App(object):
                     if self.auto_timer >= self.settings.auto_delay:
                         self.auto_timer = 0
                         self.advance()
+
+        # 成就解锁弹窗倒计时
+        if self.achieve_popups:
+            for p in self.achieve_popups:
+                p["ttl"] -= dt
+            self.achieve_popups = [p for p in self.achieve_popups if p["ttl"] > 0]
 
     def is_revealed(self):
         return self.reveal >= self._total_chars()
@@ -833,6 +845,31 @@ class App(object):
                 y += 24
         hint = self.fonts.get(16).render("按回车继续", True, (200, 170, 170))
         self.base.blit(hint, (40, self.H - 40))
+
+    def draw_achievements(self):
+        """成就解锁的小卡片，居中偏上、金色描边，几秒后淡出。"""
+        u = self.ui
+        cx = int(self.W * 0.5)
+        y = int(self.H * 0.16)
+        title_f = self.fonts.get(19, bold=True)
+        name_f = self.fonts.get(23, bold=True)
+        for card in self.achieve_popups:
+            name = card.get("name", "")
+            tw = max(title_f.size("★ 成就解锁")[0], name_f.size(name)[0]) + 44
+            th = 86
+            alpha = min(1.0, max(0.0, card["ttl"] / 0.5))
+            surf = pygame.Surface((tw, th), pygame.SRCALPHA)
+            surf.set_alpha(int(255 * alpha))
+            pygame.draw.rect(surf, (38, 34, 26, 235),
+                             pygame.Rect(0, 0, tw, th), border_radius=12)
+            pygame.draw.rect(surf, (232, 192, 96, 255),
+                             pygame.Rect(6, 6, tw - 12, 4), border_radius=2)
+            t1 = title_f.render("★ 成就解锁", True, (240, 206, 112))
+            t2 = name_f.render(name, True, (255, 248, 236))
+            surf.blit(t1, (tw // 2 - t1.get_width() // 2, 18))
+            surf.blit(t2, (tw // 2 - t2.get_width() // 2, 46))
+            self.base.blit(surf, (cx - tw // 2, y))
+            y += th + 12
 
     def draw_ending(self):
         self.base.fill((18, 20, 30))

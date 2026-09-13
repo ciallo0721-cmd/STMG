@@ -23,7 +23,7 @@ import os
 import re
 import types
 
-from . import pack, stdlib_api, stmos
+from . import pack, save as savemod, stdlib_api, stmos
 from .errors import STMFatal, format_exception
 from .markdown import strip_quotes
 
@@ -81,6 +81,10 @@ class Runtime(object):
         self._replay_i = 0
         self._labels = {s["name"]: i for i, s in enumerate(script.body)
                         if s["k"] == "label"}
+
+        # 成就系统：已解锁集合（跨会话持久化，按剧本标题区分）。
+        # 一开始从存档里读出来；运行中新解锁的会立刻写回。
+        self.unlocked = savemod.load_achievements(self.root, self.script.title)
 
     # ------------------------------------------------------------------ #
     # 求值
@@ -237,6 +241,22 @@ class Runtime(object):
         method = s["method"].lower()
         args, kw = s["args"], s["kwargs"]
         a0 = args[0] if args else ""
+
+        # 成就解锁：STM.achieve("名称") 与 ACHIEVE("名称") 都走这里。
+        # 只有「第一次解锁」才产生事件，gui 据此弹窗；已解锁的静默跳过。
+        if method == "achieve":
+            # a0 已由解析器去掉引号，就是干净的成就名（字符串字面量直接可用）；
+            # 非字符串（如数字）也转成字符串，空值忽略。
+            name = a0 if isinstance(a0, str) else ("" if a0 is None else str(a0))
+            if name:
+                if name not in self.unlocked:
+                    self.unlocked.add(name)
+                    savemod.save_achievements(self.root, self.script.title,
+                                             self.unlocked)
+                    yield {"t": "achieve", "name": name, "is_new": True}
+                else:
+                    yield {"t": "achieve", "name": name, "is_new": False}
+            return
 
         if obj == "S":
             if method == "character" and a0:          # 兜底，正常走不到

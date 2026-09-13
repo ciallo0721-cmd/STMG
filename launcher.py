@@ -1328,6 +1328,21 @@ class VisualEditor(BaseDialog):
     def _canvas_render(self):
         cv = self.canvas
         cv.delete("all")
+        # 防御：树顶层只允许带 stack 的帽子节点，异常节点剔除并记日志
+        clean = []
+        for n in getattr(self, "_tree", []) or []:
+            if isinstance(n, dict) and n.get("t") == "hat" \
+                    and isinstance(n.get("stack"), list):
+                clean.append(n)
+            else:
+                try:
+                    self.app.log_line("积木树剔除异常顶层节点：%r" % (n,))
+                except Exception:                  # noqa: BLE001
+                    pass
+        self._tree = clean
+        if not self._tree:
+            self._tree.append({"t": "hat", "label": "", "emit": False,
+                               "stack": []})
         rows = max(4, len(self._tree))
         cv.configure(scrollregion=(0, 0, 2200, 320 * rows + 400))
         self._hits = []
@@ -1472,6 +1487,7 @@ class VisualEditor(BaseDialog):
         f = self._find_drop(node, x, y)
         if f is None:
             if node["t"] == "hat":          # 帽子永远在顶层
+                node.setdefault("stack", [])
                 self._tree.append(node)
             elif getattr(self, "_drag_origin", None):
                 lst, i = self._drag_origin
@@ -1547,6 +1563,8 @@ class VisualEditor(BaseDialog):
                                 outline="", tags="hint")
 
     def _cv_press(self, e):
+        if getattr(self, "_drag_node", None):
+            return                          # 已经在拖了，别把别的块也拿走
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
         hit = self._hit_top(x, y)
         if hit and hit["part"] == "block":

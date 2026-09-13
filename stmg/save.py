@@ -113,3 +113,89 @@ def save_achievements(root, title, names):
             json.dump(data, f, ensure_ascii=False, indent=1)
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# CG 回廊（看过的背景 / 叠图，跨会话持久化）
+# --------------------------------------------------------------------------- #
+CG_FILE = "cg.json"
+
+
+def load_cg(root, title):
+    """读某个剧本已解锁的 CG 路径集合，读不到返回空集合。
+
+    存在 <root>/.stmg_save/cg.json，结构和 achievements.json 一样：
+    {标题: [路径...]}，一个存档目录可以容纳多款游戏。
+    """
+    p = os.path.join(save_dir(root), CG_FILE)
+    if not os.path.isfile(p):
+        return set()
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return set()
+    paths = data.get(title, [])
+    return set(paths) if isinstance(paths, (list, tuple, set)) else set()
+
+
+def save_cg(root, title, paths):
+    """把某个剧本已解锁的 CG 集合写回 cg.json。"""
+    d = save_dir(root)
+    p = os.path.join(d, CG_FILE)
+    data = {}
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (ValueError, OSError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[title] = sorted(paths)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# 语言偏好（多语言剧本：script.stm + script.<lang>.stm）
+# --------------------------------------------------------------------------- #
+LANG_FILE = "lang.json"
+
+
+def load_lang(root, title):
+    """读某个剧本上次选的语言（空串 = 默认版 script.stm）。"""
+    p = os.path.join(save_dir(root), LANG_FILE)
+    if not os.path.isfile(p):
+        return ""
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return ""
+    v = data.get(title, "") if isinstance(data, dict) else ""
+    return v if isinstance(v, str) else ""
+
+
+def save_lang(root, title, lang):
+    """记住某个剧本的语言选择。"""
+    d = save_dir(root)
+    p = os.path.join(d, LANG_FILE)
+    data = {}
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (ValueError, OSError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[title] = lang
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass

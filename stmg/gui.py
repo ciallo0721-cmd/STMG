@@ -15,7 +15,7 @@ from .audio import Audio
 from .errors import format_exception
 from .session import Session
 
-TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING = range(9)
+TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING, GALLERY = range(10)
 
 # 界面尺寸、颜色、位置全在 uiconf.DEFAULTS 里，
 # 项目目录下的 custom/gui.py 可以覆盖任意一项——别在这里写死数值。
@@ -111,6 +111,24 @@ class App(object):
         # 项目自定义界面出问题的话，开发模式下提示一句（不影响游戏）
         if self.ui_error and self.dev_mode:
             self.pending_toasts.append("界面配置：" + self.ui_error)
+
+        # ---- 多语言：script.stm 为默认版，script.<lang>.stm 是其它语言 ----
+        # 标题界面会出现「语言」按钮循环切换；选择记在 .stmg_save/lang.json。
+        # 换语言只换剧本文件，窗口大小沿用首次加载的分辨率。
+        self.langs = {}            # {语言标记: 路径}
+        self.lang_order = []       # 切换用的稳定顺序
+        self.current_lang = ""
+        try:
+            from . import project as _proj
+            self.langs = _proj.find_languages(script.path)
+            self.lang_order = sorted(self.langs.keys())
+            saved = savemod.load_lang(self.root, os.path.basename(self.root))
+            if saved != "" and saved in self.langs and \
+                    os.path.normcase(self.langs[saved]) != \
+                    os.path.normcase(script.path):
+                self._apply_lang(saved, silent=True)
+        except Exception:                          # noqa: BLE001
+            self.langs, self.lang_order = {}, []
 
         # 标题界面的 BGM（项目 custom/gui.py 里配的 title_bgm）
         self._title_bgm_on()
@@ -342,12 +360,16 @@ class App(object):
                     self.input_text += event.text
                 continue
 
-            if self.state in (TITLE, MENU, SAVELOAD, BACKLOG, ENDING, ERROR):
+            if self.state in (TITLE, MENU, SAVELOAD, BACKLOG, ENDING, ERROR,
+                              GALLERY):
                 for b in self.buttons:
                     act = b.handle(event)
                     if act:
                         act()
                         break
+                if event.type == pygame.MOUSEBUTTONDOWN and self.state == GALLERY \
+                        and getattr(self, "gallery_view", ""):
+                    self.gallery_view = ""      # 放大查看时点一下就回画廊
                 if event.type == pygame.MOUSEBUTTONDOWN and self.state == BACKLOG:
                     self.backlog_scroll += -3 if event.button == 4 else 3 if event.button == 5 else 0
                     self.backlog_scroll = max(0, min(self.backlog_scroll,
@@ -383,7 +405,7 @@ class App(object):
                 self.running = False
             return
         if k == pygame.K_ESCAPE:
-            if self.state in (MENU, BACKLOG, SAVELOAD):
+            if self.state in (MENU, BACKLOG, SAVELOAD, GALLERY):
                 self.state = self.overlay_from
                 self.about_only = False
                 self.buttons = []
@@ -458,13 +480,17 @@ class App(object):
     def title_buttons(self):
         out = []
         cx = self.W // 2
-        y = int(self.H * 0.46)
+        y = int(self.H * 0.44)
         labels = [("开始游戏", self.start_game, "start.png"),
-                  ("读取存档", lambda: self.open_saveload(False), ""),
-                  ("设置", self.open_menu, "setting.png"),
-                  ("关于", self.show_about, "about.png")]
+                  ("读取存档", lambda: self.open_saveload(False), "")]
+        if len(self.lang_order) >= 2:
+            labels.append(("语言: %s" % (self.current_lang or "默认"),
+                           self.cycle_lang, ""))
+        labels += [("CG 回廊", self.open_gallery, ""),
+                   ("设置", self.open_menu, "setting.png"),
+                   ("关于", self.show_about, "about.png")]
         for i, (label, act, img) in enumerate(labels):
-            r = pygame.Rect(cx - 110, y + i * 62, 220, 48)
+            r = pygame.Rect(cx - 110, y + i * 56, 220, 44)
             pic = self.asset("button", img) if img else ""
             out.append(render.Button(r, label, act,
                                      render.load_image(pic, r.size) if pic else None))
@@ -488,6 +514,85 @@ class App(object):
         self.about_only = True
 
     # ------------------------------------------------------------------ #
+    # 多语言切换
+    # ------------------------------------------------------------------ #
+    def _apply_lang(self, lang, silent=False):
+        """把剧本换成对应语言版本；失败返回 False（当前版本不动）。"""
+        path = self.langs.get(lang)
+        if not path:
+            return False
+        from . import parser as _parser
+        sc = _parser.parse_file(path)
+        if sc.error_count():
+            if not silent and self.dev_mode:
+                self.pending_toasts.append(
+                    "语言版本 %s 有 %d 个错误，加载失败" % (lang or "默认",
+                                                    sc.error_count()))
+            return False
+        self.script = sc
+        self.current_lang = lang
+        self.session = Session(sc, getattr(self.session, "options", None),
+                               self.dev_mode)
+        # 语言偏好按项目目录记（不同语言版本的 title 应保持一致）
+        savemod.save_lang(self.root, os.path.basename(self.root), lang)
+        if not silent:
+            self.pending_toasts.append("Language: %s" % (lang or "default"))
+        return True
+
+    def cycle_lang(self):
+        if len(self.lang_order) < 2:
+            return
+        i = self.lang_order.index(self.current_lang) \
+            if self.current_lang in self.lang_order else 0
+        self._apply_lang(self.lang_order[(i + 1) % len(self.lang_order)])
+
+    # ------------------------------------------------------------------ #
+    # CG 回廊
+    # ------------------------------------------------------------------ #
+    def open_gallery(self):
+        self.overlay_from = TITLE
+        self.state = GALLERY
+        self.gallery_view = ""
+        self.gallery_paths = sorted(getattr(self.session.runtime, "seen_cg", set()))
+        self.buttons = []
+        cols = 4
+        cw, ch = 150, 100
+        gap = 18
+        x0 = (self.W - cols * cw - (cols - 1) * gap) // 2
+        y0 = int(self.H * 0.16)
+        for i, p in enumerate(self.gallery_paths):
+            col, row = i % cols, i // cols
+            r = pygame.Rect(x0 + col * (cw + gap), y0 + row * (ch + gap), cw, ch)
+            img = render.load_image(p, r.size)
+            if img:
+                self.buttons.append(render.Button(r, "", (lambda pp=p: self._view_cg(pp)), img))
+
+    def _view_cg(self, path):
+        self.gallery_view = path
+        self.buttons = []
+
+    def draw_gallery(self):
+        # 深色底 + 网格缩略图；点缩略图放大，Esc 返回标题
+        self.base.fill((16, 16, 24))
+        title = self.fonts.get(int(self.H * 0.05)).render("CG 回廊", True, (235, 235, 245))
+        self.base.blit(title, (self.W // 2 - title.get_width() // 2, int(self.H * 0.05)))
+        hint = self.fonts.get(18).render("Esc 返回标题 · 点缩略图放大", True, (150, 150, 170))
+        self.base.blit(hint, (self.W // 2 - hint.get_width() // 2, self.H - int(self.H * 0.06)))
+        if getattr(self, "gallery_view", ""):
+            big = render.load_image(self.gallery_view)
+            if big:
+                img = render.fit_into(big, int(self.W * 0.92), int(self.H * 0.8))
+                self.base.blit(img, ((self.W - img.get_width()) // 2,
+                                     (self.H - img.get_height()) // 2))
+            return
+        if not self.gallery_paths:
+            tip = self.fonts.get(22).render("还没有解锁任何 CG——多玩玩就有了喵～",
+                                            True, (160, 160, 180))
+            self.base.blit(tip, (self.W // 2 - tip.get_width() // 2, self.H // 2))
+        else:
+            self.draw_buttons(22)
+
+    # ------------------------------------------------------------------ #
     def choice_rects(self):
         opts = self.session.block.get("options", []) if self.session.block else []
         n = len(opts)
@@ -502,6 +607,8 @@ class App(object):
             self.draw_title()
         elif self.state == ERROR:
             self.draw_error()
+        elif self.state == GALLERY:
+            self.draw_gallery()
         elif self.state == ENDING:
             self.draw_ending()
         else:

@@ -109,6 +109,8 @@ class Runtime(object):
         # 成就系统：已解锁集合（跨会话持久化，按剧本标题区分）。
         # 一开始从存档里读出来；运行中新解锁的会立刻写回。
         self.unlocked = savemod.load_achievements(self.root, self.script.title)
+        # CG 回廊：看过的背景 / 叠图，跨会话持久化（供标题界面的回廊展示）
+        self.seen_cg = savemod.load_cg(self.root, self.script.title)
 
     # ------------------------------------------------------------------ #
     # 求值
@@ -211,6 +213,14 @@ class Runtime(object):
                 ans = self._take_answer()
                 if ans is None:
                     ans = yield ev
+                    # 存档用：把选择记进 answers 流。记**索引**而不是文本，
+                    # 这样多语言剧本（同一句话在不同语言里选项文字不同）也能
+                    # 用同一份存档正确重放。老存档里存的是文本，_take_answer
+                    # 原样吐回来，choose 分支照样兼容。
+                    if isinstance(ans, str) and ans in ev["options"]:
+                        self.answers.append(("choose", ev["options"].index(ans)))
+                    else:
+                        self.answers.append(("choose", ans))
                 self.chosen.add(ans)
                 self.last_choice = ans
                 if not isinstance(ans, str):
@@ -292,9 +302,13 @@ class Runtime(object):
                 yield from self._sprite_event(a0, args, kw)
             elif method in ("cg", "bg", "background"):
                 # 和 Ren'Py 的 scene 一样：换背景会先把立绘清空
-                yield {"t": "bg", "path": self.resolve(a0), "clear": True}
+                p = self.resolve(a0)
+                self._unlock_cg(p)
+                yield {"t": "bg", "path": p, "clear": True}
             elif method == "picture":
-                yield {"t": "picture", "path": self.resolve(a0)}
+                p = self.resolve(a0)
+                self._unlock_cg(p)
+                yield {"t": "picture", "path": p}
             elif method == "play":
                 loop = str(kw.get("loop", "true")).lower() not in ("false", "0", "no")
                 yield {"t": "bgm", "path": self.resolve(a0), "loop": loop}
@@ -471,3 +485,18 @@ class Runtime(object):
             self.answers.append((kind, val))
             return val
         return None
+
+    def _unlock_cg(self, path):
+        """登记看过的 CG（背景 / 叠图），首次见到就落盘。
+
+        只记存在的真实图片；占位路径（文件不在）不进回廊，免得画廊里全是占位块。
+        """
+        if not path:
+            return
+        # 占位路径（文件不存在、也不是资源包里的）不进回廊，免得画廊全是占位块
+        if not os.path.isfile(path) and not path.startswith(pack.PREFIX):
+            return
+        if path in self.seen_cg:
+            return
+        self.seen_cg.add(path)
+        savemod.save_cg(self.root, self.script.title, self.seen_cg)

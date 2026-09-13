@@ -15,6 +15,7 @@ import queue
 import subprocess
 import sys
 import threading
+import tkinter as tk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -175,6 +176,7 @@ class Launcher(ctk.CTk):
             ("语法检查", self.run_check, False),
             ("无头试跑", self.run_auto, False),
             ("编辑剧本", self.edit_script, False),
+            ("可视化编辑", self.visual_edit, False),
             ("打包发布", self.run_pack, False),
             ("发布为 HTML", self.run_html, True),
             ("转为 Ren'Py", self.run_stm2renpy, True),
@@ -425,6 +427,12 @@ class Launcher(ctk.CTk):
         except Exception as e:                         # noqa: BLE001
             self.log_line("打不开：%s" % e)
 
+    def visual_edit(self):
+        if not self._need():
+            return
+        p = proj.script_of(self.current["path"])
+        VisualEditor(self, p)
+
     def open_folder(self):
         if not self._need():
             return
@@ -494,6 +502,204 @@ class Launcher(ctk.CTk):
 # --------------------------------------------------------------------------- #
 # 对话框
 # --------------------------------------------------------------------------- #
+def _classify_line(line):
+    """给一行剧本打类型标签，列表里一眼能看出这是什么语句。"""
+    import re as _re
+    s = line.strip()
+    if not s:
+        return "空行"
+    if s in ("<", ">", "</>"):
+        return "块"
+    if s.startswith("<--"):
+        return "注释"
+    if _re.match(r"(?i)^(choose)\s*:", s):
+        return "选择支"
+    if _re.match(r"(?i)^(question)\b", s):
+        return "询问"
+    if _re.match(r"(?i)^(if)\b", s):
+        return "条件"
+    if _re.match(r"(?i)^(else)\s*:", s):
+        return "否则"
+    if _re.match(r"(?i)^(end(if|choose))\b", s):
+        return "收尾"
+    if _re.match(r"(?i)^(set)\b", s):
+        return "赋值"
+    if _re.match(r"^[\w\u4e00-\u9fff]+\s*:\s*$", s):
+        return "标签"
+    if _re.match(r"^[A-Za-z_][\w.]*\s*\(", s):
+        return "调用"
+    if _re.match(r"^[^\s=]+\s*=\s*", s):
+        return "配置"
+    if s.startswith('"'):
+        return "旁白"
+    if '"' in s:
+        return "台词"
+    return "其它"
+
+
+class VisualEditor(ctk.CTkToplevel):
+    """行级可视化剧本编辑器：左边带类型标注的行列表，右边改 / 插 / 删。
+
+    直接编辑源文件行，保存前自动留 .bak 备份；不做 AST 回写，所以
+    注释、缩进、排版都原样保留，语法检查器照常可用。
+    """
+
+    def __init__(self, app, path):
+        super().__init__(app)
+        self.app = app
+        self.path = path
+        self.lines = []
+        self.title("可视化编辑 —— %s" % os.path.basename(path))
+        self.configure(fg_color=BG)
+        self.geometry("980x640")
+        self.after(60, self._center)
+        self.after(140, self.grab_set)
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(12, 6))
+        ctk.CTkLabel(top, text=path, font=app.f(12), text_color=SUB).pack(side="left")
+        for text, fn, hot in [("保存", self.do_save, True),
+                              ("语法检查", self.do_check, False),
+                              ("刷新", self.reload_file, False)]:
+            fg = ACCENT if hot else "transparent"
+            tc = "#ffffff" if hot else INK
+            bw = 0 if hot else 1
+            ctk.CTkButton(top, text=text, width=90, height=32, corner_radius=9,
+                          font=app.f(12.5), fg_color=fg, text_color=tc,
+                          border_width=bw, border_color=BORDER,
+                          hover_color=ACCENT_HOVER if hot else HOVER,
+                          command=fn).pack(side="right", padx=(6, 0))
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=14, pady=6)
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+
+        self.listbox = tk.Listbox(body, font=("Microsoft YaHei", 11),
+                                  activestyle="dotline", relief="flat")
+        self.listbox.grid(row=0, column=0, sticky="nsew")
+        self.listbox.bind("<<ListboxSelect>>", self.on_select)
+        self.listbox.bind("<Double-Button-1>", lambda e: self.load_into_entry())
+
+        right = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12)
+        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self.tag_label = ctk.CTkLabel(right, text="选中行后编辑", font=app.f(13, True),
+                                      text_color=INK, anchor="w")
+        self.tag_label.pack(fill="x", padx=14, pady=(14, 4))
+        self.entry = ctk.CTkTextbox(right, height=140, font=app.f(12.5))
+        self.entry.pack(fill="x", padx=14)
+
+        btns = [("应用到选中行", self.do_replace),
+                ("在下方插入", self.do_insert_after),
+                ("在上方插入", self.do_insert_before),
+                ("删除选中行", self.do_delete)]
+        for i, (text, fn) in enumerate(btns):
+            hot = (i == 0)
+            ctk.CTkButton(right, text=text, height=34, corner_radius=9,
+                          font=app.f(12.5),
+                          fg_color=ACCENT if hot else "transparent",
+                          text_color="#ffffff" if hot else INK,
+                          border_width=0 if hot else 1, border_color=BORDER,
+                          hover_color=ACCENT_HOVER if hot else HOVER,
+                          command=fn).grid(row=i // 2, column=i % 2,
+                                           sticky="ew", padx=14, pady=6)
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_columnconfigure(1, weight=1)
+        self.tip = ctk.CTkLabel(right, text="双击列表行可快速载入。\n保存前会自动备份 .bak。",
+                                font=app.f(11.5), text_color=SUB,
+                                justify="left", anchor="w")
+        self.tip.pack(fill="x", padx=14, pady=(4, 12), side="bottom")
+        self.reload_file()
+
+    # ---- 文件 ---- #
+    def reload_file(self):
+        try:
+            with open(self.path, "r", encoding="utf-8-sig") as f:
+                self.lines = f.read().splitlines()
+        except Exception as e:                         # noqa: BLE001
+            self.app.log_line("可视化编辑：读不了 %s（%s）" % (self.path, e))
+            self.destroy()
+            return
+        self.refresh_list(keep=0)
+
+    def refresh_list(self, keep=0):
+        self.listbox.delete(0, tk.END)
+        for i, ln in enumerate(self.lines, 1):
+            self.listbox.insert(tk.END, "%4d │ %-4s │ %s" % (i, _classify_line(ln), ln))
+        if self.lines:
+            self.listbox.selection_clear(0, tk.END)
+            self.listbox.selection_set(min(keep, len(self.lines) - 1))
+
+    def _sel(self):
+        sel = self.listbox.curselection()
+        return sel[0] if sel else None
+
+    def _entry_text(self):
+        return self.entry.get("1.0", "end").rstrip("\n")
+
+    def on_select(self, _e=None):
+        i = self._sel()
+        if i is not None:
+            self.tag_label.configure(text="第 %d 行 · %s" % (i + 1, _classify_line(self.lines[i])))
+
+    def load_into_entry(self):
+        i = self._sel()
+        if i is not None:
+            self.entry.delete("1.0", "end")
+            self.entry.insert("1.0", self.lines[i])
+
+    def do_replace(self):
+        i = self._sel()
+        if i is None:
+            return
+        self.lines[i] = self._entry_text()
+        self.refresh_list(keep=i)
+
+    def do_insert_after(self):
+        i = self._sel()
+        self.lines.insert((i + 1) if i is not None else len(self.lines),
+                          self._entry_text())
+        self.refresh_list(keep=(i + 1) if i is not None else len(self.lines) - 1)
+
+    def do_insert_before(self):
+        i = self._sel()
+        self.lines.insert(i if i is not None else 0, self._entry_text())
+        self.refresh_list(keep=i if i is not None else 0)
+
+    def do_delete(self):
+        i = self._sel()
+        if i is None:
+            return
+        self.lines.pop(i)
+        self.refresh_list(keep=i)
+
+    def do_save(self):
+        bak = self.path + ".bak"
+        try:
+            if os.path.isfile(self.path):
+                with open(self.path, "r", encoding="utf-8-sig") as f:
+                    with open(bak, "w", encoding="utf-8") as g:
+                        g.write(f.read())
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write("\n".join(self.lines) + "\n")
+            self.app.log_line("可视化编辑：已保存（备份在 %s）" % bak)
+        except Exception as e:                         # noqa: BLE001
+            self.app.log_line("可视化编辑：保存失败：%s" % e)
+
+    def do_check(self):
+        self.do_save()
+        root = os.path.dirname(self.path)
+        try:
+            r = subprocess.run([sys.executable, os.path.join(proj.ROOT, "tools", "check.py"), root],
+                               capture_output=True, text=True, timeout=60)
+            out = (r.stdout or r.stderr or "").strip().splitlines()
+            tail = "\n".join(out[-12:]) if out else "（没有输出）"
+        except Exception as e:                         # noqa: BLE001
+            tail = str(e)
+        InfoDialog(self.app, "语法检查", tail)
+
+
 class BaseDialog(ctk.CTkToplevel):
     def __init__(self, master, title, w=420, h=260):
         super().__init__(master)

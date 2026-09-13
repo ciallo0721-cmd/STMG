@@ -385,3 +385,32 @@ def push_recent(path):
     cfg["recent"] = [p for p in cfg["recent"] if os.path.isdir(p)]
     save_cfg(cfg)
     return cfg["recent"]
+
+
+# --------------------------------------------------------------------------- #
+# 多语言剧本发现：script.stm 为默认版，script.<lang>.stm 为其它语言版本
+# --------------------------------------------------------------------------- #
+def find_languages(script_path):
+    """扫描剧本所在目录，返回 {语言标记: 剧本绝对路径}。
+
+    默认版（script.stm）的语言标记是空串 ""；script.en.stm → "en"，
+    script.zh-tw.stm → "zh-tw"。没有任何语言文件时返回 {"": 默认路径}，
+    这样标题界面的「语言」按钮只会在真有多版本时出现。
+    """
+    d = os.path.dirname(os.path.abspath(script_path))
+    base = os.path.basename(script_path)
+    stem, ext = os.path.splitext(base)
+    out = {}
+    default = os.path.join(d, base)
+    if os.path.isfile(default):
+        out[""] = default
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    pat = re.compile(re.escape(stem) + r"\.([A-Za-z][A-Za-z0-9_-]*)\.stm$", re.I)
+    for f in names:
+        m = pat.match(f)
+        if m and f != base:
+            out[m.group(1).lower()] = os.path.join(d, f)
+    return out

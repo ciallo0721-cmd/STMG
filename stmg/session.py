@@ -11,7 +11,7 @@ from .runtime import Runtime
 
 # 这些事件只是「顺手改变画面/声音」，不用等玩家；其余的都是要停下等操作的
 SIDE_EFFECTS = ("bg", "picture", "sprite", "bgm", "se", "voice",
-                "stop", "hide", "toast", "python")
+                "stop", "hide", "toast", "python", "achieve")
 
 
 class Session(object):

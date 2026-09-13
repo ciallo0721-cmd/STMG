@@ -68,3 +68,48 @@ def describe(snap):
         snippet = tail[-1][1] if isinstance(tail[-1], (list, tuple)) else str(tail[-1])
     snippet = snippet.replace("\n", " ")[:18]
     return "%s  %s" % (snap.get("time", "?"), snippet)
+
+
+# --------------------------------------------------------------------------- #
+# 成就系统（跨会话持久化）
+# --------------------------------------------------------------------------- #
+ACHIEVE_FILE = "achievements.json"
+
+
+def load_achievements(root, title):
+    """读某个剧本（按标题区分）已解锁的成就集合，读不到返回空集合。
+
+    root 是项目目录，成就存在 <root>/.stmg_save/achievements.json 里，
+    整体是个 {标题: [成就名...]} 的字典，所以可以一个存档目录容纳多款游戏。
+    """
+    p = os.path.join(save_dir(root), ACHIEVE_FILE)
+    if not os.path.isfile(p):
+        return set()
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return set()
+    names = data.get(title, [])
+    return set(names) if isinstance(names, (list, tuple, set)) else set()
+
+
+def save_achievements(root, title, names):
+    """把某个剧本的已解锁成就集合写回 achievements.json。"""
+    d = save_dir(root)
+    p = os.path.join(d, ACHIEVE_FILE)
+    data = {}
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (ValueError, OSError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[title] = sorted(names)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass

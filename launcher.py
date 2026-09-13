@@ -537,7 +537,31 @@ def _classify_line(line):
     return "其它"
 
 
-class VisualEditor(ctk.CTkToplevel):
+class BaseDialog(ctk.CTkToplevel):
+    def __init__(self, master, title, w=420, h=260):
+        super().__init__(master)
+        self.result = None
+        self.title(title)
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
+        self.transient(master)
+        self.geometry("%dx%d" % (w, h))
+        self.after(60, self._center)
+        self.after(140, self.grab_set)
+
+    def _center(self):
+        try:
+            self.update_idletasks()
+            px, py = self.master.winfo_rootx(), self.master.winfo_rooty()
+            pw, ph = self.master.winfo_width(), self.master.winfo_height()
+            x = px + (pw - self.winfo_width()) // 2
+            y = py + (ph - self.winfo_height()) // 3
+            self.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except Exception:                              # noqa: BLE001
+            pass
+
+
+class VisualEditor(BaseDialog):
     """行级可视化剧本编辑器：左边带类型标注的行列表，右边改 / 插 / 删。
 
     直接编辑源文件行，保存前自动留 .bak 备份；不做 AST 回写，所以
@@ -545,15 +569,11 @@ class VisualEditor(ctk.CTkToplevel):
     """
 
     def __init__(self, app, path):
-        super().__init__(app)
+        super().__init__(app, "可视化编辑 —— %s" % os.path.basename(path), 980, 640)
+        self.resizable(True, True)
         self.app = app
         self.path = path
         self.lines = []
-        self.title("可视化编辑 —— %s" % os.path.basename(path))
-        self.configure(fg_color=BG)
-        self.geometry("980x640")
-        self.after(60, self._center)
-        self.after(140, self.grab_set)
 
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=14, pady=(12, 6))
@@ -577,7 +597,7 @@ class VisualEditor(ctk.CTkToplevel):
         body.grid_rowconfigure(0, weight=1)
 
         self.listbox = tk.Listbox(body, font=("Microsoft YaHei", 11),
-                                  activestyle="dotline", relief="flat")
+                                  activestyle="dotbox", relief="flat")
         self.listbox.grid(row=0, column=0, sticky="nsew")
         self.listbox.bind("<<ListboxSelect>>", self.on_select)
         self.listbox.bind("<Double-Button-1>", lambda e: self.load_into_entry())
@@ -590,22 +610,24 @@ class VisualEditor(ctk.CTkToplevel):
         self.entry = ctk.CTkTextbox(right, height=140, font=app.f(12.5))
         self.entry.pack(fill="x", padx=14)
 
+        bgrid = ctk.CTkFrame(right, fg_color="transparent")
+        bgrid.pack(fill="x", padx=14, pady=6)
+        bgrid.grid_columnconfigure(0, weight=1)
+        bgrid.grid_columnconfigure(1, weight=1)
         btns = [("应用到选中行", self.do_replace),
                 ("在下方插入", self.do_insert_after),
                 ("在上方插入", self.do_insert_before),
                 ("删除选中行", self.do_delete)]
         for i, (text, fn) in enumerate(btns):
             hot = (i == 0)
-            ctk.CTkButton(right, text=text, height=34, corner_radius=9,
+            ctk.CTkButton(bgrid, text=text, height=34, corner_radius=9,
                           font=app.f(12.5),
                           fg_color=ACCENT if hot else "transparent",
                           text_color="#ffffff" if hot else INK,
                           border_width=0 if hot else 1, border_color=BORDER,
                           hover_color=ACCENT_HOVER if hot else HOVER,
                           command=fn).grid(row=i // 2, column=i % 2,
-                                           sticky="ew", padx=14, pady=6)
-        right.grid_columnconfigure(0, weight=1)
-        right.grid_columnconfigure(1, weight=1)
+                                           sticky="ew", padx=4, pady=5)
         self.tip = ctk.CTkLabel(right, text="双击列表行可快速载入。\n保存前会自动备份 .bak。",
                                 font=app.f(11.5), text_color=SUB,
                                 justify="left", anchor="w")
@@ -633,7 +655,9 @@ class VisualEditor(ctk.CTkToplevel):
 
     def _sel(self):
         sel = self.listbox.curselection()
-        return sel[0] if sel else None
+        # browse 模式下鼠标点击只会产生单项；多项只可能是程序叠加，
+        # 取最后一项（最近一次 set 的行）。
+        return sel[-1] if sel else None
 
     def _entry_text(self):
         return self.entry.get("1.0", "end").rstrip("\n")
@@ -699,29 +723,6 @@ class VisualEditor(ctk.CTkToplevel):
             tail = str(e)
         InfoDialog(self.app, "语法检查", tail)
 
-
-class BaseDialog(ctk.CTkToplevel):
-    def __init__(self, master, title, w=420, h=260):
-        super().__init__(master)
-        self.result = None
-        self.title(title)
-        self.configure(fg_color=BG)
-        self.resizable(False, False)
-        self.transient(master)
-        self.geometry("%dx%d" % (w, h))
-        self.after(60, self._center)
-        self.after(140, self.grab_set)
-
-    def _center(self):
-        try:
-            self.update_idletasks()
-            px, py = self.master.winfo_rootx(), self.master.winfo_rooty()
-            pw, ph = self.master.winfo_width(), self.master.winfo_height()
-            x = px + (pw - self.winfo_width()) // 2
-            y = py + (ph - self.winfo_height()) // 3
-            self.geometry("+%d+%d" % (max(0, x), max(0, y)))
-        except Exception:                              # noqa: BLE001
-            pass
 
 
 class InfoDialog(BaseDialog):

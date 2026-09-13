@@ -117,13 +117,14 @@ def _split_blocks(text, issues):
         s = raw.strip()
         if s == "<":
             if cur is not None:
-                issues.append(Issue(cur[0], "上一个 < ... > 块没有闭合",
-                                    "检查是不是漏了单独一行的 >"))
+                issues.append(Issue(cur[0], "有一段剧情块（< ... >）还没写结尾的 >",
+                                    "在它的最后单独写一行 > 收尾"))
             cur = [n, []]
             continue
         if s in (">", "</>"):  # 单个 > 或者 </> 都当块结束
             if cur is None:
-                issues.append(Issue(n, "多余的 > ：前面没有 < 开块"))
+                issues.append(Issue(n, "这里多了一个 >，但前面没有对应的 < 开头",
+                                    "删掉这个 >，或在它前面补上 < 开块"))
             else:
                 blocks.append((cur[0], cur[1]))
                 cur = None
@@ -131,7 +132,8 @@ def _split_blocks(text, issues):
         if cur is not None:
             cur[1].append((n, raw))
     if cur is not None:
-        issues.append(Issue(cur[0], "整个剧本读完了，这个 < 块还没闭合"))
+        issues.append(Issue(cur[0], "剧本读完了，但有一个 < 块一直没写 > 收尾",
+                            "在文件末尾补一行 >"))
         blocks.append((cur[0], cur[1]))
     return blocks
 
@@ -207,8 +209,8 @@ def _parse_lines(lines, issues):
                 break
             if ind > indent:
                 if allow_empty:
-                    issues.append(Issue(n, "缩进比上一行深，但没有可归属的关键字",
-                                        "If / Choose 的正文才需要缩进"))
+                    issues.append(Issue(n, "这一行缩进太深，可它前面没有 If / Choose 之类的结构收它",
+                                        "只有 If / Choose 里面的内容才需要缩进"))
                     pos[0] += 1
                     continue
                 break
@@ -224,8 +226,8 @@ def _parse_lines(lines, issues):
                     continue
                 if allow_end:
                     break
-                issues.append(Issue(n, "%s 是多余的：这一层没有 If / Choose 需要收尾"
-                                    % s, "删掉它，或者检查缩进", "warn"))
+                issues.append(Issue(n, "这里的 %s 有点多余：当前这层没有需要它收尾的 If / Choose"
+                                    % s, "如果不需要就删掉，或者检查缩进对不对", "warn"))
                 continue
             last_block[0] = False
 
@@ -251,8 +253,8 @@ def _parse_lines(lines, issues):
                         continue
                     break
                 if not opts:
-                    issues.append(Issue(decl_line, "Choose: 后面没有选项",
-                                        '写成 "选项A":"选项B"'))
+                    issues.append(Issue(decl_line, "Choose: 下面没写任何选项",
+                                        '在它下面写： "选项A" "选项B"'))
                 stmts.append({"k": "choose", "options": opts, "line": decl_line})
                 last_block[0] = True
                 continue
@@ -266,8 +268,8 @@ def _parse_lines(lines, issues):
                     body = parse_block(items[pos[0]][1], allow_empty=False)
                 else:
                     body = []
-                    issues.append(Issue(n, "If 的正文既没缩进也没有 EndIf，分支范围只能靠推测",
-                                        "给正文加 4 格缩进，或者写 EndIf"))
+                    issues.append(Issue(n, "If 里面的内容既没缩进也没写 EndIf，引擎只能猜哪里结束",
+                                        "正文往前缩进 4 格，或者显式写 EndIf 收尾"))
                     while pos[0] < len(items):
                         nn, nind, ns = items[pos[0]]
                         nlow = ns.lower().rstrip(":").strip()
@@ -320,8 +322,8 @@ def _parse_lines(lines, issues):
                 im = STM_OS_INNER_RE.match(inner)
                 if not im:
                     issues.append(Issue(
-                        n, "stm.os 的参数看不懂：%s" % inner[:40],
-                        '参考 STM.os(read("路径")) / revision("路径"),"旧"to"新"'))
+                        n, "看不懂 stm.os 的写法：%s" % inner[:40],
+                        '照着 STM.os(read("路径")) 或 STM.os(revision("路径"),"旧"to"新") 写'))
                     pos[0] += 1
                     continue
                 op, fpath, find, replace = im.group(1), im.group(2), \
@@ -329,14 +331,14 @@ def _parse_lines(lines, issues):
                 op = op.lower()
                 if op not in ("read", "create", "remove", "revision"):
                     issues.append(Issue(
-                        n, "stm.os 不认识的操作：%s" % op,
-                        "只能用 read / create / remove / revision"))
+                        n, "stm.os 只支持 read / create / remove / revision，这里却是：%s" % op,
+                        "把操作改成这四种之一"))
                     pos[0] += 1
                     continue
                 if op == "revision" and find is None:
                     issues.append(Issue(
-                        n, "revision 需要写成 ,\"旧内容\"to\"新内容\"",
-                        '例：stm.os(revision("x"),"a"to"b")'))
+                        n, "revision 少写了要替换的内容",
+                        '写全：stm.os(revision("x"),"旧"to"新")'))
                     pos[0] += 1
                     continue
                 stmts.append({"k": "stm_os", "op": op, "path": fpath,
@@ -393,8 +395,8 @@ def _parse_lines(lines, issues):
                 stmts.append({"k": "say", "who": None, "text": s, "line": n})
                 continue
 
-            issues.append(Issue(n, "看不懂这一行：%s" % s[:40],
-                                "对照 README 的语法表"))
+            issues.append(Issue(n, "这一行没看懂：%s" % s[:40],
+                                "对照 README 的语法说明检查一下写法"))
             pos[0] += 1
         return stmts
 
@@ -409,7 +411,8 @@ def _parse_header(lines, issues):
             continue
         m = HEADER_KV_RE.match(s)
         if not m:
-            issues.append(Issue(n, "头部里有不是 key=value 的行：%s" % s[:30]))
+            issues.append(Issue(n, "剧本开头的设置里有一行不是「名称=值」：%s" % s[:30],
+                                "头部每行写成 名称=值，例如 size=800x600"))
             continue
         k, v = m.group(1), m.group(2).strip().strip('"')
         header[k.lower()] = v
@@ -419,7 +422,7 @@ def _parse_header(lines, issues):
     if m:
         header["size"] = (int(m.group(1)), int(m.group(2)))
     else:
-        issues.append(Issue(None, "分辨率写得不认识：%s" % size, "应该像 800x600 这样"))
+        issues.append(Issue(None, "分辨率看不懂：%s" % size, "写成例如 800x600 这种"))
         header["size"] = (800, 600)
 
     header.setdefault("title", "")
@@ -438,12 +441,13 @@ def parse_file(path):
 def parse_text(text, path="<memory>"):
     sc = Script(path)
     if "\u201c" in text or "\u201d" in text:
-        sc.issues.append(Issue(None, "剧本里用了全角引号 “ ”，已自动纠正为半角",
-                               "建议以后直接用英文半角双引号", "warn"))
+        sc.issues.append(Issue(None, "剧本里用了中文引号 “ ”，已经帮你换成英文引号了",
+                               "以后直接打英文半角引号更稳妥", "warn"))
     text = COMMENT_RE.sub("", text)
     blocks = _split_blocks(text, sc.issues)
     if not blocks:
-        sc.issues.append(Issue(None, "整个剧本里没有找到 < ... > 块"))
+        sc.issues.append(Issue(None, "剧本里没找到任何 < ... > 剧情块",
+                               "用 < 和 > 把正文包起来"))
         return sc
 
     remaining = list(blocks)
@@ -467,7 +471,8 @@ def parse_text(text, path="<memory>"):
         sc.ending = _parse_lines(end_lines, sc.issues)
 
     if not sc.body:
-        sc.issues.append(Issue(None, "正文是空的，游戏跑起来会直接结束"))
+        sc.issues.append(Issue(None, "正文是空的，游戏一开场就结束了",
+                               "在 Start: 下面写点剧情"))
 
     _validate(sc)
     return sc
@@ -489,21 +494,22 @@ def _validate(sc):
     for s in sc.walk():
         if s["k"] == "say" and s["who"] and s["who"] not in defined:
             sc.issues.append(Issue(
-                s["line"], "角色「%s」没有定义就直接说话了" % s["who"],
-                '先在 Start: 下面写 S.character("%s")' % s["who"]))
+                s["line"], "角色「%s」还没登场就开口说话了" % s["who"],
+                '先在 Start: 下面用 S.character("%s") 介绍一下' % s["who"]))
         if s["k"] == "if":
             cond = s["cond"].strip()
             if cond.startswith('"') and cond.endswith('"') and len(cond) > 1:
                 target = cond[1:-1]
                 if options and target not in options:
                     sc.issues.append(Issue(
-                        s["line"], "If 判断的选项「%s」不在任何 Choose 里" % target,
-                        "检查选项文字有没有打错", "warn"))
+                        s["line"], "If 里判断的选项「%s」，在选项里没出现过" % target,
+                        "确认 Choose 里的选项文字和这里完全一致", "warn"))
         if s["k"] == "call" and s["obj"].upper() == "R" and s["method"] == "api":
             key = s["kwargs"].get("key", "")
             if key and key != "option" and not key.startswith("http") and len(key) < 12:
                 sc.issues.append(Issue(
-                    s["line"], "R.api 的 key 看起来太短，像是随手填的",
-                    '正式项目请写 key=option，把密钥放到 options.stm', "warn"))
+                    s["line"], "R.api 的 key 好像是随便填的，太短了",
+                    '正式发布请写 key=option，把密钥放进 options.stm', "warn"))
     if labels and "Start" not in labels:
-        sc.issues.append(Issue(None, "正文里没有 Start:", "游戏会直接从第一句开始跑", "warn"))
+        sc.issues.append(Issue(None, "正文里没有 Start: 标记",
+                               "没有也没关系，游戏会直接从头一句开始；想明确起点就加 Start:", "warn"))

@@ -13,6 +13,7 @@
     sprite   立绘                    path(空则隐藏)
     bgm/se/voice  音频               path, loop
     stop/hide    停音频 / 隐藏图层   what
+    transition  转场遮罩              kind, dur
     toast    右上角提示              text
     python   STM.python 载入         name
     fatal    跑不动了                message, trace
@@ -285,6 +286,11 @@ class Runtime(object):
                 yield {"t": "stop", "what": (a0 or "bgm").lower()}
             elif method == "hide":
                 yield {"t": "hide", "what": (a0 or "sprite").lower()}
+            elif method == "transition":
+                # 转场：gui 会拿它做全屏遮罩动画（fade / dissolve / flash），
+                # 在「上一帧」和「下一帧」之间切换；没写 S.transition 时完全不影响。
+                yield {"t": "transition", "kind": (a0 or "fade"),
+                       "dur": float(kw.get("dur", "0.4"))}
             elif method == "jump":
                 if a0 in self._labels:
                     raise JumpSignal(self._labels[a0] + 1)

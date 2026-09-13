@@ -99,6 +99,15 @@ class App(object):
         self.pending_toasts = []
         self.running = True
 
+        # ---- 玩家体验相关状态（默认均不影响原有行为）----
+        self.transition = None          # 转场动画：{"kind","dur","t"} 或 None
+        self._prev_frame = None         # 转场用：上一帧快照
+        self.seen = set()               # 已经「看过」的台词 (who, text)，供快进跳过
+        self._shown_chars = 0           # 打字机音效：上一帧已经显示出来的字数
+        self.skip_read = bool(self.ui.get("skip_read", True))
+        self.type_se = self.ui.get("type_se", "") or ""
+        self.type_se_volume = float(self.ui.get("type_se_volume", 0.5))
+
         # 项目自定义界面出问题的话，开发模式下提示一句（不影响游戏）
         if self.ui_error and self.dev_mode:
             self.pending_toasts.append("界面配置：" + self.ui_error)
@@ -187,19 +196,47 @@ class App(object):
         pygame.quit()
 
     def update(self, dt):
+        # 转场动画独立于台词推进，每帧累加时间，到时结束
+        if self.transition:
+            self.transition["t"] += dt
+            if self.transition["t"] >= self.transition["dur"]:
+                self.transition = None
+                self._prev_frame = None
+
         if self.state in (ADVANCE, CHOOSE, QUESTION):
             if self.settings.text_speed < 0:
                 self.reveal = 1e9
             else:
                 self.reveal += self.settings.text_speed * dt
-            if self.state == ADVANCE and self.is_revealed():
-                if self.skip:
-                    self.advance()
-                elif self.auto:
-                    self.auto_timer += dt
-                    if self.auto_timer >= self.settings.auto_delay:
-                        self.auto_timer = 0
+            if self.state == ADVANCE:
+                if self.skip and self.skip_read:
+                    # 快进（Ctrl）：只自动跳过「已经看过」的台词，
+                    # 遇到没看过的台词或选择/问答就停下来让人看。
+                    blk = self.session.block
+                    if blk and blk["t"] == "say" and \
+                            (blk.get("who"), blk.get("text")) in self.seen:
+                        self.reveal = 1e9
                         self.advance()
+                elif self.skip:
+                    # skip_read 关掉时，行为和原来一样：露出就往前走
+                    if self.is_revealed():
+                        self.advance()
+                elif self.auto:
+                    if self.is_revealed():
+                        self.auto_timer += dt
+                        if self.auto_timer >= self.settings.auto_delay:
+                            self.auto_timer = 0
+                            self.advance()
+
+                # 打字机每字音效：每多显示出一个字就响一下
+                if self.type_se and self.settings.text_speed >= 0:
+                    total = self._total_chars()
+                    cur = int(min(self.reveal, total))
+                    if cur < total and cur > self._shown_chars:
+                        self._shown_chars = cur
+                        self.audio.play_se_once(self.type_se, self.type_se_volume)
+                    elif cur >= total:
+                        self._shown_chars = total
 
     def is_revealed(self):
         return self.reveal >= self._total_chars()
@@ -211,20 +248,27 @@ class App(object):
     def advance(self):
         if self.state != ADVANCE:
             return
+        blk = self.session.block
+        if blk and blk["t"] == "say":
+            # 玩家把这句推过去，说明读过了，下次快进可以跳过
+            self.seen.add((blk.get("who"), blk.get("text")))
         self.reveal = 0.0
         self.auto_timer = 0.0
+        self._shown_chars = 0
         self.session.next_block()
         self.apply_effects()
         self.sync_state()
 
     def choose(self, index):
         self.reveal = 0.0
+        self._shown_chars = 0
         self.session.answer(self.session.block["options"][index])
         self.apply_effects()
         self.sync_state()
 
     def submit_answer(self, text):
         self.reveal = 0.0
+        self._shown_chars = 0
         self.session.answer(text)
         self.apply_effects()
         self.sync_state()
@@ -232,6 +276,14 @@ class App(object):
     def sync_state(self):
         blk = self.session.block
         t = blk["t"]
+        if t == "transition":
+            # 转场事件：先把上一帧快照下来，再去拿紧跟在后面的真实内容
+            # （背景切换 / 下一句台词），转场遮罩会在 draw 里跨这两帧渐变。
+            self._start_transition(blk)
+            self.session.next_block()
+            self.apply_effects()
+            self.sync_state()
+            return
         if t == "say":
             self.state = ADVANCE
         elif t == "choose":
@@ -245,6 +297,19 @@ class App(object):
             self.state = ERROR
         else:
             self.state = ENDING
+
+    def _start_transition(self, blk):
+        """记下转场参数，并快照「当前画面」作为渐变的起点帧。"""
+        kind = blk.get("kind") or self.ui.get("transition_default") or "fade"
+        dur = blk.get("dur")
+        if dur in (None, ""):
+            dur = self.ui.get("transition_dur", 0.4)
+        try:
+            dur = float(dur)
+        except (TypeError, ValueError):
+            dur = 0.4
+        self._prev_frame = self.base.copy() if self.base is not None else None
+        self.transition = {"kind": kind, "dur": max(0.001, dur), "t": 0.0}
 
     # ------------------------------------------------------------------ #
     # 事件
@@ -402,6 +467,7 @@ class App(object):
         self.session.reset()
         self.apply_effects()
         self.reveal = 0.0
+        self._shown_chars = 0
         self.sync_state()
 
     def show_about(self):
@@ -438,6 +504,13 @@ class App(object):
                 self.draw_backlog()
             elif self.state == SAVELOAD:
                 self.draw_saveload()
+
+        # 转场遮罩：盖在场景之上做整屏渐变（fade / dissolve / flash）
+        if self.transition and self.state not in (TITLE, ERROR, ENDING):
+            dur = self.transition["dur"]
+            p = (self.transition["t"] / dur) if dur > 0 else 1.0
+            render.draw_transition(self.base, self.transition["kind"], p,
+                                   self.W, self.H, (16, 16, 22), self._prev_frame)
 
         render.draw_toasts(self.base, self.fonts, self.pending_toasts[-4:], self.W,
                            size=self.ui["toast_size"])
@@ -739,6 +812,9 @@ class App(object):
             self.session.restore(snap)
             self.apply_effects()
             self.reveal = 0.0
+            self._shown_chars = 0
+            # 读档点之前的台词都算「看过」，快进时可以直接跳过
+            self.seen.update((w, t) for w, t in self.session.runtime.history)
             self.sync_state()
             self.state = self.overlay_from if self.overlay_from != SAVELOAD else ADVANCE
         except Exception as e:                       # noqa: BLE001

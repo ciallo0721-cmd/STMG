@@ -1350,12 +1350,17 @@ class VisualEditor(BaseDialog):
         ys = []
         cy = y + 24
         zy0 = cy
+        # 先占位再画子块：self._zones 逆序查找时，越里层的堆区越先匹配，
+        # 这样积木才能落进 C 形积木的肚子里（而不是被外层堆截胡）。
+        zone = {"x1": x, "y1": zy0, "x2": x + 620, "y2": cy + 10,
+                "stack": hat["stack"], "ys": ys}
+        pos = len(self._zones)
+        self._zones.insert(pos, zone)
         for node in hat["stack"]:
             top = cy
             cy = self._draw_node(node, x + 14, cy)
             ys.append(((top + cy) / 2.0, len(ys)))
-        self._zones.append({"x1": x, "y1": zy0, "x2": x + 620,
-                            "y2": cy + 10, "stack": hat["stack"], "ys": ys})
+        zone["y2"] = cy + 10
         if not ys:      # 空堆画个虚线提示
             cv.create_text(x + 24, cy + 12, anchor="w", text="（拖积木到这里）",
                            font=("Microsoft YaHei", 9), fill="#b0b4c4")
@@ -1375,12 +1380,16 @@ class VisualEditor(BaseDialog):
                                "node": node, "part": "block"})
             cy = y + 20
             ys = []
+            # 同帽子堆：先占位再画子块，让里层堆区优先匹配
+            zone = {"x1": x, "y1": y, "x2": x + 560, "y2": cy + 8,
+                    "stack": node["stack"], "ys": ys}
+            pos = len(self._zones)
+            self._zones.insert(pos, zone)
             for child in node["stack"]:
                 top = cy
                 cy = self._draw_node(child, x + 16, cy)
                 ys.append(((top + cy) / 2.0, len(ys)))
-            self._zones.append({"x1": x, "y1": y, "x2": x + 560, "y2": cy + 8,
-                                "stack": node["stack"], "ys": ys})
+            zone["y2"] = cy + 8
             cv.create_line(x + 3, y + 20, x + 3, cy + 6, fill=self._CV_CTRL, width=3)
             cv.create_line(x + 3, cy + 6, x + 26, cy + 6, fill=self._CV_CTRL, width=3)
             return cy + 14

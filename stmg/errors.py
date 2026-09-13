@@ -87,9 +87,9 @@ class ErrorBag(object):
         return len(self.issues)
 
     def report(self, max_lines=40):
-        """人看的报告文本。"""
+        """人看的报告文本（尽量说人话，不堆术语）。"""
         if not self.issues:
-            return "没有发现问题。"
+            return "没有发现问题，剧本看起来没问题。"
         out = []
         if self.path:
             out.append("文件: %s" % self.path)
@@ -101,7 +101,8 @@ class ErrorBag(object):
         name = level_name(len(self.errors))
         if name:
             out.append("")
-            out.append("共 %d 个错误 -> %s" % (len(self.errors), name))
+            out.append("以上一共发现 %d 个错误（%s），修掉带「错误」的就能正常启动"
+                       % (len(self.errors), name))
         return "\n".join(out)
 
 

@@ -325,6 +325,42 @@ def draw_toasts(surface, fonts, toasts, w, start_y=12, size=16):
         y += box.get_height() + 6
 
 
+def draw_transition(surface, kind, progress, w, h, color=(16, 16, 22), prev=None):
+    """转场遮罩：surface 已经画好「新的一帧」，prev 是「上一帧」的快照。
+
+    三种效果（kind）：
+        fade      淡入淡出：遮罩透明度 0->255->0，画面在中点（全遮罩的瞬间）换景
+        dissolve  交叉溶解：上一帧直接叠在新帧上，透明度 1->0 渐隐
+        flash     白闪：一层白光在中点最亮，用来掩盖瞬间的换景
+    prev 为 None 时退化为纯遮罩动画，不跨帧融合。
+    """
+    p = max(0.0, min(1.0, progress))
+
+    if kind == "dissolve":
+        if prev is not None:
+            layer = prev.copy()
+            layer.set_alpha(int(255 * (1.0 - p)))
+            surface.blit(layer, (0, 0))
+        return
+
+    if kind == "flash":
+        a = int(255 * (1.0 - abs(2.0 * p - 1.0)))
+        if a > 0:
+            mask = pygame.Surface((w, h), pygame.SRCALPHA)
+            mask.fill((255, 255, 255, a))
+            surface.blit(mask, (0, 0))
+        return
+
+    # fade（默认）：0->255->0，中点换景
+    if p < 0.5 and prev is not None:
+        surface.blit(prev, (0, 0))
+    a = int(255 * (1.0 - abs(2.0 * p - 1.0)))
+    if a > 0:
+        mask = pygame.Surface((w, h), pygame.SRCALPHA)
+        mask.fill((color[0], color[1], color[2], a))
+        surface.blit(mask, (0, 0))
+
+
 def md(text):
     # 走模块属性而不是直接引用函数，这样项目的 custom/markdown.py
     # 覆盖过 markdown.render 之后能立刻生效。

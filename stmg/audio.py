@@ -19,6 +19,8 @@ class Audio(object):
             pygame.mixer.init()
             pygame.mixer.set_num_channels(16)
             self.voice_channel = pygame.mixer.Channel(0)
+            # 打字机音效专用通道，避免打断正在播放的 BGM / SE 通道
+            self.type_channel = pygame.mixer.Channel(15)
             self.ok = True
         except pygame.error:
             self.ok = False
@@ -68,6 +70,21 @@ class Audio(object):
 
     def play_se(self, path):
         return self._play_sound(path, self.volumes["se"])
+
+    def play_se_once(self, path, volume=0.5):
+        """短促的一次性音效（打字机用）：走专用通道，不干扰 BGM / 普通 SE。
+
+        path 为空或素材缺失时直接返回 False，不发声。
+        """
+        if not self.ok or not path or not pack.exists(path):
+            return False
+        try:
+            snd = pygame.mixer.Sound(pack.open_binary(path))
+            snd.set_volume(max(0.0, min(1.0, float(volume))))
+            self.type_channel.play(snd)
+            return True
+        except (pygame.error, OSError):
+            return False
 
     def play_voice(self, path):
         if not self.ok or not path or not pack.exists(path):

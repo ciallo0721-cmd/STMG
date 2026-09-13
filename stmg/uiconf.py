@@ -48,6 +48,10 @@ DEFAULTS = {
     "sprite_w": 0.42,            # 立绘最大宽（占屏宽）
     "sprite_h": 0.76,            # 立绘最大高（占屏高）
     "sprite_bottom": 0.78,       # 脚底位置（占屏高）
+    "sprite_scale_default": 1.0,  # 立绘默认尺寸倍数（1.0 = 不改）
+    "sprite_idle": False,         # 是否开启空闲微动（默认关，老行为不变）
+    "sprite_idle_amp": 5,         # 微动竖直浮动幅度（像素）
+    "sprite_idle_rotate": 0,      # 微动附加旋转幅度（度）
 
     # ---------- S.picture 叠加图 ----------
     "pic_w": 0.6,

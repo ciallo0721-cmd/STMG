@@ -6,6 +6,8 @@
 
 import os
 
+import math
+
 import pygame
 
 from . import pack
@@ -246,6 +248,89 @@ def fit_into(img, w, h):
         return img
     return pygame.transform.smoothscale(img, (max(1, int(iw * k)),
                                               max(1, int(ih * k))))
+
+
+def _expr_path(base_path, expr):
+    """把 'png/a.png' 变成 'png/a_<expr>.png'。
+
+    场景里存的路径统一用正斜杠（resolve 的约定，也兼容 stmgpack:/ 资源包），
+    这里也用正斜杠拼，免得在 Windows 上拼出反斜杠导致资源包查不到。
+    文件不存在时由调用方静默忽略，绝不报错、绝不画占位。
+    """
+    if not expr:
+        return None
+    p = base_path.replace("\\", "/")
+    d, name = p.rsplit("/", 1) if "/" in p else ("", p)
+    root, ext = os.path.splitext(name)
+    return (d + "/" if d else "") + root + "_" + str(expr) + ext
+
+
+def draw_sprite(surface, img, cx, bottom, item, ui, W, H, t=None):
+    """把一张立绘画到 surface 上，支持逐张的 scale/alpha/y/expr/rotate 以及空闲微动。
+
+    任何新字段缺失时都退回 ui 里的默认值（sprite_scale_default 等），
+    所以老脚本不写任何新参数时，画出来的东西和以前一模一样。
+
+    item  : scene["sprites"][tag]，含 path/pos/scale/alpha/y/expr/rotate
+    ui    : uiconf 配置字典
+    cx    : 立绘水平中心 x（像素）
+    bottom: 脚底位置 y（像素）
+    t     : 当前时间（毫秒），用于空闲微动；不传则内部取 pygame.time.get_ticks()
+    """
+    if t is None:
+        t = pygame.time.get_ticks()
+
+    scale = item.get("scale")
+    if scale is None:
+        scale = ui.get("sprite_scale_default", 1.0)
+    yfrac = item.get("y") or 0.0
+    rotate = float(item.get("rotate") or 0.0)
+
+    idle = ui.get("sprite_idle", False)
+    idle_amp = ui.get("sprite_idle_amp", 5)
+    idle_rot = ui.get("sprite_idle_rotate", 0)
+
+    tw = max(1, int(W * ui.get("sprite_w", 0.42) * scale))
+    th = max(1, int(H * ui.get("sprite_h", 0.76) * scale))
+
+    img = fit_into(img, tw, th)
+
+    # 表情差分层：在基图文件名里插入 expr，文件存在才叠加，否则跳过
+    expr = item.get("expr") or ""
+    if expr:
+        ep = _expr_path(item.get("path", ""), expr)
+        if ep:
+            eimg = load_image(ep)
+            if eimg is not None:
+                eimg = fit_into(eimg, tw, th)
+                overlay = img.copy()
+                overlay.blit(eimg, ((overlay.get_width() - eimg.get_width()) // 2,
+                                    (overlay.get_height() - eimg.get_height()) // 2))
+                img = overlay
+
+    # 空闲微动：竖直轻浮 + 可选极小幅旋转，幅度都很小，纯时间函数算、不费劲
+    bob = 0.0
+    if idle:
+        ts = t / 1000.0
+        wave = math.sin(ts * 2.0)
+        bob = wave * idle_amp
+        rotate += wave * idle_rot
+
+    yoff = int(round(yfrac * H + bob))
+
+    alpha = item.get("alpha")
+    if alpha is None:
+        alpha = 255
+    alpha = max(0, min(255, int(alpha)))
+
+    if rotate:
+        img = pygame.transform.rotate(img, rotate)
+    if alpha != 255:
+        img = img.copy()
+        img.set_alpha(alpha)
+
+    surface.blit(img, (cx - img.get_width() // 2,
+                       bottom - img.get_height() + yoff))
 
 
 def draw_placeholder(surface, rect, label, hue=0):

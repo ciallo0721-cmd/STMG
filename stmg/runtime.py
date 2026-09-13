@@ -357,8 +357,24 @@ class Runtime(object):
         if not tag:
             base = os.path.basename(path.replace("\\", "/"))
             tag = os.path.splitext(base)[0]
-        return [{"t": "sprite", "path": self.resolve(path),
-                 "pos": pos.lower(), "tag": tag}]
+        ev = {"t": "sprite", "path": self.resolve(path),
+              "pos": pos.lower(), "tag": tag}
+        # 逐张立绘的增强控制：只有写了才带上，没写就走默认值（老脚本行为不变）。
+        # 剧本里写的是字面量，parser 给的是字符串，这里统一转成数字，免得渲染层再判断类型。
+        def _num(v, cast):
+            try:
+                return cast(v)
+            except (TypeError, ValueError):
+                return None
+        for key, cast in (("scale", float), ("alpha", int),
+                          ("y", float), ("rotate", float)):
+            if key in kwargs and kwargs[key] is not None:
+                val = _num(kwargs[key], cast)
+                if val is not None:
+                    ev[key] = val
+        if "expr" in kwargs:
+            ev["expr"] = kwargs["expr"] or ""
+        return [ev]
 
     def _say_text(self, raw):
         """台词默认是纯文本；带 + 号或 STM. 的才当算式求值。"""

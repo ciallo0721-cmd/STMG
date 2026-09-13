@@ -12,6 +12,7 @@
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -558,6 +559,8 @@ def _classify_line(line):
 
 class BaseDialog(ctk.CTkToplevel):
     def __init__(self, master, title, w=420, h=260):
+        # 禁用 CTk 的 Windows 标题栏 withdraw 杂技（会把窗口藏起来不还）
+        self._deactivate_windows_window_header_manipulation = True
         super().__init__(master)
         self.result = None
         self.title(title)
@@ -597,24 +600,67 @@ class VisualEditor(BaseDialog):
         self.app = app
         self.path = path
         self.lines = []
+        self.mode = "line"          # line=行级 / blocks=积木 / code=半代码
+        self._blk_sel = None        # 积木模式下选中的块下标
         self.app.log_line("可视化编辑：①窗口基座 OK")
         self.resizable(True, True)
+        self._build_ui()
+        self.app.log_line("可视化编辑：②组件搭建 OK")
+        self.reload_file()
+        # grab 保险：窗口销毁时必须释放模态 grab，否则整个应用点哪都没反应
+        self.bind("<Destroy>", self._safe_destroy, add="+")
+        self.after(300, self._grab_status)
+        # 显示保险：万一窗口又被 CTk 藏起来，强制拉回；拉不回就放手 grab
+        for ms in (400, 900, 1500):
+            self.after(ms, self._ensure_visible)
 
+    # ------------------------------------------------------------------ #
+    # 模式切换与整体布局
+    # ------------------------------------------------------------------ #
+    def _set_mode(self, mode):
+        if mode == self.mode:
+            return
+        self.mode = mode
+        self._build_ui()
+
+    def _build_ui(self):
+        for w in self.winfo_children():
+            w.destroy()
+        app = self.app
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=14, pady=(12, 6))
-        ctk.CTkLabel(top, text=path, font=app.f(12), text_color=SUB).pack(side="left")
+        ctk.CTkLabel(top, text=self.path, font=app.f(12), text_color=SUB
+                     ).pack(side="left")
         for text, fn, hot in [("保存", self.do_save, True),
                               ("语法检查", self.do_check, False),
                               ("刷新", self.reload_file, False)]:
-            fg = ACCENT if hot else "transparent"
-            tc = "#ffffff" if hot else INK
-            bw = 0 if hot else 1
-            ctk.CTkButton(top, text=text, width=90, height=32, corner_radius=9,
-                          font=app.f(12.5), fg_color=fg, text_color=tc,
-                          border_width=bw, border_color=BORDER,
+            ctk.CTkButton(top, text=text, width=84, height=32, corner_radius=9,
+                          font=app.f(12.5), fg_color=ACCENT if hot else "transparent",
+                          text_color="#ffffff" if hot else INK,
+                          border_width=0 if hot else 1, border_color=BORDER,
                           hover_color=ACCENT_HOVER if hot else HOVER,
                           command=fn).pack(side="right", padx=(6, 0))
+        # 三种编辑模式：行级 / 拖拽积木 / 半代码
+        for m, label in (("code", "半代码"), ("blocks", "拖拽积木"), ("line", "行级")):
+            hot = self.mode == m
+            ctk.CTkButton(top, text=("● " if hot else "") + label, width=92,
+                          height=32, corner_radius=9, font=app.f(12.5),
+                          fg_color=ACCENT if hot else "transparent",
+                          text_color="#ffffff" if hot else INK,
+                          border_width=0 if hot else 1, border_color=BORDER,
+                          hover_color=ACCENT_HOVER if hot else HOVER,
+                          command=lambda m=m: self._set_mode(m)
+                          ).pack(side="right", padx=(6, 0))
 
+        if self.mode == "blocks":
+            self._build_block_body()
+        elif self.mode == "code":
+            self._build_code_body()
+        else:
+            self._build_line_body()
+
+    def _build_line_body(self):
+        app = self.app
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
         body.grid_columnconfigure(0, weight=3)
@@ -657,14 +703,7 @@ class VisualEditor(BaseDialog):
                                 font=app.f(11.5), text_color=SUB,
                                 justify="left", anchor="w")
         self.tip.pack(fill="x", padx=14, pady=(4, 12), side="bottom")
-        self.app.log_line("可视化编辑：②组件搭建 OK")
-        self.reload_file()
-        # grab 保险：窗口销毁时必须释放模态 grab，否则整个应用点哪都没反应
-        self.bind("<Destroy>", self._safe_destroy, add="+")
-        self.after(300, self._grab_status)
-        # 显示保险：万一窗口又被 CTk 藏起来，强制拉回；拉不回就放手 grab
-        for ms in (400, 900, 1500):
-            self.after(ms, self._ensure_visible)
+        self.refresh_list(0)
 
     def _ensure_visible(self):
         try:
@@ -709,8 +748,16 @@ class VisualEditor(BaseDialog):
             self.app.log_line("可视化编辑：读不了 %s（%s）" % (self.path, e))
             self.destroy()
             return
-        self.refresh_list(keep=0)
-        self.app.log_line("可视化编辑：③已加载 %d 行" % len(self.lines))
+        if self.mode == "blocks":
+            self._blk_sel = None
+            self._refresh_blocks()
+            self.app.log_line("可视化编辑：③已加载 %d 行" % len(self.lines))
+        elif self.mode == "code":
+            self._fill_code()
+            self.app.log_line("可视化编辑：③已加载 %d 行" % len(self.lines))
+        else:
+            self.refresh_list(0)
+            self.app.log_line("可视化编辑：③已加载 %d 行" % len(self.lines))
 
     def refresh_list(self, keep=0):
         self.listbox.delete(0, tk.END)
@@ -790,6 +837,338 @@ class VisualEditor(BaseDialog):
             tail = str(e)
         InfoDialog(self.app, "语法检查", tail)
 
+    # ------------------------------------------------------------------ #
+    # 积木模式（拖拽积木）
+    # ------------------------------------------------------------------ #
+    def _sections(self):
+        """按顶层 < > 把文件切段，返回 [(内容起始行, 内容结束行)]（不含标记行）。"""
+        secs, start = [], None
+        for i, ln in enumerate(self.lines):
+            s = ln.strip()
+            if s == "<" and start is None:
+                start = i
+            elif s in (">", "</>") and start is not None:
+                secs.append((start + 1, i))
+                start = None
+        return secs
+
+    def _find_secs(self):
+        """找出 头部 / 正文(带 Start:) / 结局 三段。"""
+        secs = self._sections()
+        header = body = ending = None
+        for a, b in secs:
+            chunk = "\n".join(self.lines[a:b])
+            if re.search(r"^\s*Start\s*:", chunk, re.M):
+                body = (a, b)
+            elif header is None and body is None:
+                header = (a, b)
+        for a, b in reversed(secs):
+            if (a, b) != body and (a, b) != header:
+                ending = (a, b)
+                break
+        return header, body, ending
+
+    def _analyze_blocks(self):
+        """正文按缩进切成顶层积木块。块 = {start, end(不含), kind}，span 含子块。"""
+        _h, body, _e = self._find_secs()
+        blocks = []
+        if not body:
+            return body, blocks
+        a, b = body
+        i = a
+        while i < b:
+            ln = self.lines[i]
+            if not ln.strip():
+                i += 1
+                continue
+            ind = len(ln) - len(ln.lstrip(" \t"))
+            if ind > 0:                      # 没块头的缩进行：并入上一块
+                if blocks and blocks[-1]["end"] == i:
+                    blocks[-1]["end"] = i + 1
+                i += 1
+                continue
+            j = i + 1
+            while j < b:
+                l2 = self.lines[j]
+                if not l2.strip():
+                    j += 1
+                    continue
+                if len(l2) - len(l2.lstrip(" \t")) > 0:
+                    j += 1
+                    continue
+                break
+            kind = _classify_line(ln)
+            # Choose: 后面同缩进的选项行并进同一块
+            if kind == "选择支" and j < b:
+                nxt = self.lines[j]
+                if re.match(r'^\s*"[^"]*"\s*[:：]', nxt) and \
+                        len(nxt) - len(nxt.lstrip(" \t")) == 0:
+                    k = j + 1
+                    while k < b and re.match(r'^\s*"[^"]*"\s*[:：]', self.lines[k]):
+                        k += 1
+                    j = k
+                    kind = "选择支"
+            blocks.append({"start": i, "end": j, "kind": kind})
+            i = j
+        return body, blocks
+
+    _BLK_COLOR = {"标签": "#5b7cfa", "选择支": "#8e6ff0", "条件": "#8e6ff0",
+                  "询问": "#3a9d6e", "赋值": "#c98a2d", "调用": "#4a90c4",
+                  "旁白": "#3a9d6e", "台词": "#3a9d6e", "注释": "#98a0b8",
+                  "配置": "#98a0b8", "其它": "#98a0b8"}
+
+    def _blk_desc(self, blk):
+        ln = self.lines[blk["start"]].strip()
+        kind = blk["kind"]
+        if kind == "标签":
+            name = ln.rstrip(":").strip()
+            if name.lower() == "start":
+                return "当启动 start.py / bat 时"
+            return "当接收到「%s」时" % name
+        if kind == "选择支":
+            return "让玩家选择（%d 行）" % (blk["end"] - blk["start"])
+        if kind == "条件":
+            return "如果满足条件（%d 行）" % (blk["end"] - blk["start"])
+        if kind == "询问":
+            return "询问玩家输入"
+        if kind == "赋值":
+            return "设置变量：" + ln
+        if kind == "旁白":
+            return "旁白：" + ln.strip('"')[:16]
+        if kind == "台词":
+            m = re.match(r'^(?P<who>[^"\s][^"]*?)\s*[:：]?\s*(?P<text>".*)$', ln)
+            if m:
+                return "%s 说：%s" % (m.group("who"),
+                                      m.group("text").strip('"')[:14])
+            return "台词：" + ln[:16]
+        if kind == "调用":
+            return "执行：" + ln[:22]
+        return ln[:20] if ln else kind
+
+    def _build_block_body(self):
+        app = self.app
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=14, pady=6)
+        body.grid_columnconfigure(0, weight=0)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        # 左边：积木调色板（和 Scratch 一样按分类竖着排）
+        palette = ctk.CTkScrollableFrame(body, width=196, label_text="积木箱",
+                                         label_font=app.f(12, True))
+        palette.grid(row=0, column=0, sticky="nsew")
+        for cat, items in [
+            ("开始", [("当接收到「消息」", ["消息N:"])]),
+            ("台词", [("旁白", ['"这里"']),
+                      ("角色说话", ['角色"这里"'])]),
+            ("舞台", [("换背景", ['S.cg("bg/这里.png")']),
+                      ("叠图片", ['S.picture("png/这里.png")']),
+                      ("立绘登场", ['S.character("png/这里.png")']),
+                      ("清空立绘", ['S.hide("all")'])]),
+            ("音频", [("BGM", ['S.play("music/这里.mp3")']),
+                      ("音效", ['S.sound("music/这里.wav")']),
+                      ("语音", ['S.voice("music/这里.wav")']),
+                      ("停 BGM", ['S.stop("bgm")'])]),
+            ("变量", [("设置变量", ["SET 变量 = 0"])]),
+            ("控制", [("选择支", ["Choose:", '    "选项A":"选项B"']),
+                      ("如果选项被选", ['If "选项A":', '    "这里"']),
+                      ("跳到标签", ['S.jump("消息N")']),
+                      ("结束游戏", ["S.end()"])]),
+            ("询问", [("问玩家问题", ['STM.Q = "这里"', "Question:"])]),
+        ]:
+            ctk.CTkLabel(palette, text=cat, font=app.f(12, True), text_color=INK,
+                         anchor="w").pack(fill="x", padx=6, pady=(8, 2))
+            for label, tpl in items:
+                ctk.CTkButton(palette, text="≡ " + label, height=30,
+                              corner_radius=8, font=app.f(11.5), anchor="w",
+                              fg_color="transparent", text_color=INK,
+                              border_width=1, border_color=BORDER,
+                              hover_color=HOVER,
+                              command=lambda t=tuple(tpl): self._blk_add(t)
+                              ).pack(fill="x", padx=6, pady=2)
+
+        # 中间：积木序列
+        self.blk_list = ctk.CTkScrollableFrame(body, fg_color=CARD,
+                                               corner_radius=12)
+        self.blk_list.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self._refresh_blocks()
+
+    def _refresh_blocks(self):
+        import re as _re  # noqa: F401  (re 已在模块级)
+        for w in self.blk_list.winfo_children():
+            w.destroy()
+        app = self.app
+        body, blocks = self._analyze_blocks()
+        _h, _b, ending = self._find_secs()
+
+        def row(i, blk):
+            color = self._BLK_COLOR.get(blk["kind"], "#98a0b8")
+            sel = (self._blk_sel == i)
+            card = ctk.CTkFrame(self.blk_list, fg_color=HOVER if sel else CARD,
+                                corner_radius=10,
+                                border_width=2 if sel else 1,
+                                border_color=ACCENT if sel else BORDER)
+            card.pack(fill="x", padx=6, pady=4)
+            bar = ctk.CTkFrame(card, fg_color=color, corner_radius=6, width=6)
+            bar.pack(side="left", fill="y", padx=(8, 6), pady=8)
+            ctk.CTkLabel(card, text=self._blk_desc(blk), font=app.f(12.5),
+                         text_color=INK, anchor="w").pack(side="left", fill="x",
+                                                          expand=True, padx=2)
+            for sym, fn in (("↑", lambda i=i: self._blk_move(i, -1)),
+                            ("↓", lambda i=i: self._blk_move(i, 1)),
+                            ("✕", lambda i=i: self._blk_del(i))):
+                ctk.CTkButton(card, text=sym, width=30, height=26,
+                              corner_radius=7, font=app.f(12),
+                              fg_color="transparent", text_color=SUB,
+                              hover_color=HOVER, command=fn
+                              ).pack(side="right", padx=2, pady=6)
+            card.bind("<Button-1>", lambda e, i=i: self._blk_pick(i))
+
+        for i, blk in enumerate(blocks):
+            row(i, blk)
+
+        # 结局段：当 end 部分结束时
+        endcard = ctk.CTkFrame(self.blk_list, fg_color=CARD, corner_radius=10,
+                               border_width=1, border_color=BORDER)
+        endcard.pack(fill="x", padx=6, pady=(12, 4))
+        ctk.CTkFrame(endcard, fg_color="#6b5bb5", corner_radius=6, width=6
+                     ).pack(side="left", fill="y", padx=(8, 6), pady=8)
+        txt = "当 end 部分结束时" if ending else "还没有 end 部分（结局画面）"
+        ctk.CTkLabel(endcard, text=txt, font=app.f(12.5), text_color=INK,
+                     anchor="w").pack(side="left", fill="x", expand=True, padx=2)
+        ctk.CTkButton(endcard, text="编辑" if ending else "＋新建", width=64,
+                      height=26, corner_radius=7, font=app.f(12),
+                      fg_color="transparent", text_color=INK, border_width=1,
+                      border_color=BORDER, hover_color=HOVER,
+                      command=self._edit_ending).pack(side="right", padx=6, pady=6)
+
+        hint = ctk.CTkLabel(self.blk_list,
+                            text="点左边积木添加 · ↑↓ 调顺序 · ✕ 删除 · 点积木选中\n"
+                                 "改台词内容：切「行级」双击那行 · 保存前自动 .bak",
+                            font=app.f(11), text_color=SUB, justify="left")
+        hint.pack(fill="x", padx=8, pady=8)
+
+    def _blk_pick(self, i):
+        self._blk_sel = i
+        self._refresh_blocks()
+
+    def _blk_insert_pos(self):
+        body, blocks = self._analyze_blocks()
+        if self._blk_sel is not None and 0 <= self._blk_sel < len(blocks):
+            return blocks[self._blk_sel]["end"]
+        return body[1] if body else len(self.lines)
+
+    def _blk_add(self, template):
+        """把调色板积木插到选中块之后（没选中就插到正文末尾）。"""
+        pos = self._blk_insert_pos()
+        n_msg = len([l for l in self.lines if re.match(r"^\s*消息\d+\s*:", l)])
+        lines = []
+        for t in template:
+            t = t.replace("消息N", "消息%d" % (n_msg + 1))
+            lines.append(t)
+        self.lines[pos:pos] = lines
+        self._blk_sel = None
+        self._refresh_blocks()
+
+    def _blk_move(self, i, delta):
+        _body, blocks = self._analyze_blocks()
+        j = i + delta
+        if not (0 <= j < len(blocks)):
+            return
+        a, b = blocks[i]["start"], blocks[i]["end"]
+        c, d = blocks[j]["start"], blocks[j]["end"]
+        s1, e1, s2, e2 = min(a, c), min(b, d), max(a, c), max(b, d)
+        mid = self.lines[e1:s2]
+        span_a = self.lines[a:b]
+        span_b = self.lines[c:d]
+        self.lines[s1:e2] = (span_b if i < j else span_a) + mid + \
+                            (span_a if i < j else span_b)
+        self._blk_sel = j
+        self._refresh_blocks()
+
+    def _blk_del(self, i):
+        _body, blocks = self._analyze_blocks()
+        if not (0 <= i < len(blocks)):
+            return
+        del self.lines[blocks[i]["start"]:blocks[i]["end"]]
+        self._blk_sel = None
+        self._refresh_blocks()
+
+    def _edit_ending(self):
+        _h, _b, ending = self._find_secs()
+        if ending:
+            a, b = ending
+            EndEditDialog(self.app, self, a, b)
+        else:
+            # 没有结局段：追加一段新的
+            self.lines += ["<", '"感谢游玩"', ">"]
+            self._refresh_blocks()
+
+    # ------------------------------------------------------------------ #
+    # 半代码模式
+    # ------------------------------------------------------------------ #
+    def _build_code_body(self):
+        app = self.app
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=14, pady=6)
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=1)
+        self.code_box = ctk.CTkTextbox(body, font=("Consolas", 12.5))
+        self.code_box.grid(row=0, column=0, sticky="nsew")
+        self._fill_code()
+        bar = ctk.CTkFrame(body, fg_color="transparent")
+        bar.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ctk.CTkLabel(bar, text="直接写 .stm 源码；「应用」后可切回积木/行级继续编辑。",
+                     font=app.f(11.5), text_color=SUB).pack(side="left")
+        ctk.CTkButton(bar, text="还原", width=80, height=30, corner_radius=9,
+                      font=app.f(12.5), fg_color="transparent", text_color=INK,
+                      border_width=1, border_color=BORDER, hover_color=HOVER,
+                      command=self._fill_code).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(bar, text="应用到剧本", width=110, height=30,
+                      corner_radius=9, font=app.f(12.5), fg_color=ACCENT,
+                      text_color="#ffffff", hover_color=ACCENT_HOVER,
+                      command=self._apply_code).pack(side="right")
+
+    def _fill_code(self):
+        self.code_box.delete("1.0", "end")
+        self.code_box.insert("1.0", "\n".join(self.lines))
+
+    def _apply_code(self):
+        txt = self.code_box.get("1.0", "end").rstrip("\n")
+        self.lines = txt.splitlines() if txt else []
+        self.app.log_line("可视化编辑：半代码已应用（%d 行），记得点「保存」" % len(self.lines))
+
+
+class EndEditDialog(BaseDialog):
+    """编辑「当 end 部分结束时」的结局内容。"""
+
+    def __init__(self, app, editor, a, b):
+        self._deactivate_windows_window_header_manipulation = True
+        super().__init__(app, "编辑 end 部分（结局画面）", 620, 460)
+        self.editor = editor
+        self.a, self.b = a, b
+        ctk.CTkLabel(self, text="结局在剧本跑完（S.end 或正文结束）后显示。",
+                     font=app.f(12), text_color=SUB).pack(anchor="w", padx=16,
+                                                          pady=(14, 4))
+        self.box = ctk.CTkTextbox(self, font=("Consolas", 13))
+        self.box.pack(fill="both", expand=True, padx=16, pady=6)
+        self.box.insert("1.0", "\n".join(editor.lines[a:b]))
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=(0, 14))
+        ctk.CTkButton(bar, text="取消", width=90, height=34, corner_radius=9,
+                      font=app.f(12.5), fg_color="transparent", text_color=INK,
+                      border_width=1, border_color=BORDER, hover_color=HOVER,
+                      command=self.destroy).pack(side="right")
+        ctk.CTkButton(bar, text="保存到剧本", width=120, height=34,
+                      corner_radius=9, font=app.f(12.5), fg_color=ACCENT,
+                      text_color="#ffffff", hover_color=ACCENT_HOVER,
+                      command=self._save).pack(side="right", padx=(0, 8))
+
+    def _save(self):
+        txt = self.box.get("1.0", "end").rstrip("\n")
+        self.editor.lines[self.a:self.b] = txt.splitlines() if txt else []
+        self.editor.app.log_line("可视化编辑：end 部分已更新，记得点「保存」")
+        self.destroy()
 
 
 class InfoDialog(BaseDialog):

@@ -141,6 +141,17 @@ def load_markdown(root):
         return "custom/markdown.py 里没有 render(text) 函数"
 
     from . import markdown as mdmod
+
+    # 挂载前先试跑一次：如果自定义 render 里直接调了 _md.render(text)，
+    # 挂载后就会自己调自己（无限递归）。这里提前探测，给出能看懂的提示。
+    try:
+        fn("__stmg_probe__")
+    except RecursionError:
+        return ("custom/markdown.py 会无限递归：render 里不能直接写 _md.render(text)，"
+                "请先在文件顶部用 _base_render = _md.render 存下原函数再调用")
+    except Exception:
+        pass  # 其他异常留给运行时按原样处理
+
     mdmod.render = fn
     plain = ns.get("plain")
     if callable(plain):

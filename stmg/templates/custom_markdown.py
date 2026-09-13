@@ -19,11 +19,16 @@
 
     from stmg import markdown as _md
 
+    _base_render = _md.render     # ★ 必须先把原函数存下来（见下）
+
     def render(text):
         text = text.replace("[w]", "……")      # 先把自定义标记处理掉
-        return _md.render(text)                # 剩下的交给引擎
+        return _base_render(text)             # 剩下的交给引擎
 
 注意：
+  * ★ 不要在 render 里直接写 `_md.render(text)`！引擎挂载这个文件之后
+    `_md.render` 就是 render 自己，直接写会无限递归（RecursionError）。
+    要像上面那样先 `_base_render = _md.render` 把原函数抓在手里再调用；
   * 别 import stmg.gui —— 那个模块要 pygame，在外面跑会炸；
   * plain() 是打字机和历史记录用的纯文本，不写就直接用 render 的结果拼；
   * 改坏了也不会崩游戏，语法错误会在「历史记录」旁边以提示形式显示（开发模式）。
@@ -31,10 +36,14 @@
 
 from stmg import markdown as _md
 
+# ★ 关键：在引擎把 render 替换成自定义版本之前，先把原函数抓在手里
+_base_render = _md.render
+
 
 def render(text):
     """默认行为 = 引擎原样。想加规则就在 return 之前动手。"""
-    return _md.render(text)
+    # 示例：text = text.replace("[w]", "……")
+    return _base_render(text)
 
 
 def plain(text):

@@ -431,7 +431,11 @@ class Launcher(ctk.CTk):
         if not self._need():
             return
         p = proj.script_of(self.current["path"])
-        VisualEditor(self, p)
+        try:
+            VisualEditor(self, p)
+        except Exception as e:                         # noqa: BLE001
+            # tkinter 回调异常只进 stderr，玩家看不到——这里兜底写进日志
+            self.log_line("可视化编辑打不开：%s: %s" % (type(e).__name__, e))
 
     def open_folder(self):
         if not self._need():

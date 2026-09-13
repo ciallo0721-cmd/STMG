@@ -1,10 +1,16 @@
 @echo off
 cd /d "%~dp0"
-rem 调试阶段先用 python.exe（有控制台，报错看得见）。
-rem 以后嫌控制台碍眼，把下面的 python.exe 换成 pythonw.exe 就行。
-if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" launcher.py
-) else (
-    python launcher.py
+rem Launcher UI needs CustomTkinter; install it on first run if missing.
+set PY=python
+if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
+
+%PY% -c "import customtkinter" 2>nul
+if errorlevel 1 (
+    echo Launcher needs CustomTkinter, installing now...
+    %PY% -m pip install customtkinter -i https://mirrors.aliyun.com/pypi/simple/
+    echo.
 )
+
+rem Use python.exe in debug phase so errors are visible in console.
+%PY% launcher.py
 if errorlevel 1 pause

@@ -25,3 +25,10 @@ desktop.ini
 
 # 项目记忆 / 工作区数据（不进仓库）
 .workbuddy/
+
+# Pyodide 运行时（tools/get_pyodide.py 本地下载，约 13MB 不进仓库）
+stmg/pyodide/
+
+# 临时测试
+_tmptest/
+*.bak

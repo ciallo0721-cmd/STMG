@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""STMG 启动器 —— 管项目、跑游戏、查语法、打包发布。
+"""STMG 启动器 —— 管项目、跑游戏、查语法、打包、发布。
 
-普通 Python + tkinter 写的（标准库自带，不用装东西）。
-之所以不像 Ren'Py 那样用剧本语言自举，是因为启动器要处理文件对话框、
-子进程、滚动列表这些活，用 tkinter 反而更短更稳。
+界面用 CustomTkinter 写的（现代化外观、圆角、跟随系统深浅色）。
+启动器本身不需要 pygame，引擎坏了它照样能开。
 
 双击 STMG启动器.bat，或者：
 
@@ -16,12 +15,32 @@ import queue
 import subprocess
 import sys
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+
+
+def _fail_no_ctk():
+    """没装 CustomTkinter 时给一句人话，而不是甩一堆 traceback。"""
+    msg = ("缺少 CustomTkinter，启动器打不开。\n\n"
+           "装一下就好（在 STMG 目录下执行）：\n"
+           "    .venv\\Scripts\\python.exe -m pip install customtkinter\n\n"
+           "国内网络慢的话加个镜像：\n"
+           "    -i https://mirrors.aliyun.com/pypi/simple/")
+    print(msg)
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, msg, "STMG 启动器", 0x10)
+    except Exception:                                  # noqa: BLE001
+        pass
+    sys.exit(1)
+
+
+try:
+    import customtkinter as ctk
+except ImportError:
+    _fail_no_ctk()
 
 from stmg import project as proj                       # noqa: E402
 
@@ -29,140 +48,179 @@ PY = sys.executable
 START = os.path.join(HERE, "start.py")
 CHECK = os.path.join(HERE, "tools", "check.py")
 PACK = os.path.join(HERE, "stmenc", "start.py")
+HTMLPUB = os.path.join(HERE, "tools", "htmlpub.py")
+STM2RPY = os.path.join(HERE, "tools", "stm2renpy.py")
 
-BG = "#f4f5fa"
-CARD = "#ffffff"
-LINE = "#d7d9e6"
-INK = "#2b2d3a"
-SUB = "#7a7d92"
-ACCENT = "#4c6ef5"
-DANGER = "#d64545"
+ACCENT = "#5b7cfa"
+ACCENT_HOVER = "#4169e1"
+DANGER = "#c0483f"
+CARD = ("#ffffff", "#1b1e28")
+BG = ("#eef1f7", "#14161d")
+INK = ("#1d2030", "#e9ecf5")
+SUB = ("#6b7285", "#98a0b8")
+BORDER = ("#c9cede", "#333849")
+HOVER = ("#e8ebf3", "#232735")
+LOG_BG = "#11131a"
+LOG_FG = "#cfd6e6"
 
 
-class Launcher(object):
-    def __init__(self, root):
-        self.root = root
+class Launcher(ctk.CTk):
+    def __init__(self):
+        ctk.set_appearance_mode("system")
+        ctk.set_default_color_theme("blue")
+        super().__init__()
+
         self.cfg = proj.load_cfg()
-        self.queue = queue.Queue()
+        self.q = queue.Queue()
         self.busy = False
         self.projects = []
         self.current = None
+        self._rows = {}
+        self._fonts = {}
 
-        root.title("STMG 启动器")
-        root.geometry(self.cfg.get("window", "920x640"))
-        root.minsize(820, 560)
-        root.configure(bg=BG)
+        self.title("STMG 启动器")
+        self.geometry(self.cfg.get("window", "1040x700"))
+        self.minsize(920, 620)
+        self.configure(fg_color=BG)
 
-        self._init_style()
         self._build()
         self.refresh()
-        self.root.after(100, self._poll)
+        self.after(120, self._poll)
 
     # ------------------------------------------------------------------ #
-    def _init_style(self):
-        try:
-            import tkinter.font as tkfont
-            for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
-                f = tkfont.nametofont(name)
-                f.configure(family="Microsoft YaHei UI", size=10)
-            tkfont.nametofont("TkHeadingFont").configure(
-                family="Microsoft YaHei UI", size=10, weight="bold")
-        except Exception:                       # noqa: BLE001 - 字体缺失不影响功能
-            pass
-        s = ttk.Style()
-        try:
-            s.theme_use("clam")
-        except tk.TclError:
-            pass
-        s.configure("TFrame", background=BG)
-        s.configure("Card.TFrame", background=CARD)
-        s.configure("TLabel", background=BG, foreground=INK)
-        s.configure("Card.TLabel", background=CARD, foreground=INK)
-        s.configure("Sub.TLabel", background=CARD, foreground=SUB)
-        s.configure("Title.TLabel", background=BG, foreground=INK,
-                    font=("Microsoft YaHei UI", 15, "bold"))
-        s.configure("TButton", padding=(10, 6))
-        s.configure("Go.TButton", padding=(10, 6),
-                    background=ACCENT, foreground="white")
-        s.map("Go.TButton", background=[("active", "#3b5bdb")])
+    def f(self, size=13, bold=False):
+        # Tk 只认整数号，11.5 这种会直接报错，这里统一取整
+        size = int(round(size))
+        key = (size, bold)
+        if key not in self._fonts:
+            try:
+                self._fonts[key] = ctk.CTkFont(family="Microsoft YaHei UI",
+                                               size=size,
+                                               weight="bold" if bold else "normal")
+            except Exception:                          # noqa: BLE001
+                self._fonts[key] = ctk.CTkFont(size=size)
+        return self._fonts[key]
 
     def _build(self):
-        head = ttk.Frame(self.root, padding=(16, 14, 16, 8))
-        head.pack(fill="x")
-        ttk.Label(head, text="STMG 启动器", style="Title.TLabel").pack(side="left")
-        ttk.Label(head, text="Super Text Markdown Galgame",
-                  foreground=SUB).pack(side="left", padx=(10, 0), pady=(6, 0))
+        self.grid_columnconfigure(0, weight=0, minsize=280)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
-        body = ttk.Frame(self.root, padding=(16, 0, 16, 8))
-        body.pack(fill="both", expand=True)
+        # ---------- 顶栏 ----------
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 8))
+        head.grid_columnconfigure(0, weight=1)
 
-        # ---- 左：项目列表 ----
-        left = ttk.Frame(body)
-        left.pack(side="left", fill="y")
-        ttk.Label(left, text="项目").pack(anchor="w", pady=(0, 6))
+        left = ctk.CTkFrame(head, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(left, text="STMG", font=self.f(24, True),
+                     text_color=INK).pack(side="left")
+        ctk.CTkLabel(left, text="Super Text Markdown Galgame", font=self.f(12),
+                     text_color=SUB).pack(side="left", padx=(10, 0), pady=(8, 0))
 
-        box = tk.Frame(left, bg=LINE, bd=0)
-        box.pack(fill="y", expand=True)
-        self.listbox = tk.Listbox(box, width=30, bd=0, highlightthickness=0,
-                                  activestyle="none", bg=CARD, fg=INK,
-                                  selectbackground=ACCENT, selectforeground="white",
-                                  font=("Microsoft YaHei UI", 10))
-        sb = ttk.Scrollbar(box, orient="vertical", command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=sb.set)
-        self.listbox.pack(side="left", fill="both", expand=True, padx=1, pady=1)
-        sb.pack(side="right", fill="y")
-        self.listbox.bind("<<ListboxSelect>>", self.on_pick)
-        self.listbox.bind("<Double-Button-1>", lambda e: self.run_game())
+        self.mode_menu = ctk.CTkOptionMenu(head, values=["跟随系统", "浅色", "深色"],
+                                           width=112, height=30, font=self.f(12),
+                                           command=self.on_mode)
+        self.mode_menu.set("跟随系统")
+        self.mode_menu.grid(row=0, column=1, sticky="e")
 
-        row = ttk.Frame(left, padding=(0, 8, 0, 0))
-        row.pack(fill="x")
-        ttk.Button(row, text="新建项目", command=self.new_project).pack(side="left")
-        ttk.Button(row, text="添加...", command=self.add_project).pack(side="left", padx=6)
+        # ---------- 左：项目列表 ----------
+        panel = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        panel.grid(row=1, column=0, sticky="nsew", padx=(20, 10), pady=(0, 8))
+        panel.grid_rowconfigure(1, weight=1)
+        panel.grid_columnconfigure(0, weight=1)
 
-        # ---- 右：项目卡片 ----
-        right = ttk.Frame(body, style="Card.TFrame", padding=16)
-        right.pack(side="left", fill="both", expand=True, padx=(14, 0))
+        ctk.CTkLabel(panel, text="项目", font=self.f(14, True), text_color=INK
+                     ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 6))
 
-        self.lbl_title = ttk.Label(right, text="没有选中项目", style="Card.TLabel",
-                                   font=("Microsoft YaHei UI", 14, "bold"))
-        self.lbl_title.pack(anchor="w")
-        self.lbl_path = ttk.Label(right, text="", style="Sub.TLabel", wraplength=520,
-                                  justify="left")
-        self.lbl_path.pack(anchor="w", pady=(4, 0))
-        self.lbl_meta = ttk.Label(right, text="", style="Sub.TLabel")
-        self.lbl_meta.pack(anchor="w", pady=(2, 0))
+        self.listbox = ctk.CTkScrollableFrame(panel, fg_color="transparent")
+        self.listbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.listbox.grid_columnconfigure(0, weight=1)
 
-        pad = ttk.Frame(right, style="Card.TFrame", padding=(0, 14, 0, 0))
-        pad.pack(fill="x")
-        btns = [
-            ("启动游戏", self.run_game, "Go.TButton"),
-            ("语法检查", self.run_check, "TButton"),
-            ("无头试跑", self.run_auto, "TButton"),
-            ("打包发布", self.run_pack, "TButton"),
-            ("编辑剧本", self.edit_script, "TButton"),
-            ("打开文件夹", self.open_folder, "TButton"),
+        row = ctk.CTkFrame(panel, fg_color="transparent")
+        row.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 14))
+        ctk.CTkButton(row, text="新建项目", width=100, height=34, corner_radius=9,
+                      font=self.f(12), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self.new_project).pack(side="left")
+        ctk.CTkButton(row, text="添加…", width=80, height=34, corner_radius=9,
+                      font=self.f(12), fg_color="transparent", border_width=1,
+                      border_color=BORDER, text_color=INK, hover_color=HOVER,
+                      command=self.add_project).pack(side="left", padx=8)
+
+        # ---------- 右：详情 + 操作 ----------
+        right = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        right.grid(row=1, column=1, sticky="nsew", padx=(10, 20), pady=(0, 8))
+        right.grid_columnconfigure(0, weight=1)
+
+        self.lbl_title = ctk.CTkLabel(right, text="没有选中项目", font=self.f(18, True),
+                                      text_color=INK, anchor="w")
+        self.lbl_title.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 2))
+        self.lbl_path = ctk.CTkLabel(right, text="", font=self.f(11.5), text_color=SUB,
+                                     anchor="w", justify="left", wraplength=580)
+        self.lbl_path.grid(row=1, column=0, sticky="ew", padx=20)
+        self.lbl_meta = ctk.CTkLabel(right, text="", font=self.f(11.5), text_color=SUB,
+                                     anchor="w")
+        self.lbl_meta.grid(row=2, column=0, sticky="ew", padx=20, pady=(2, 14))
+
+        ctk.CTkButton(right, text="启动游戏", height=46, corner_radius=12,
+                      font=self.f(15, True), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self.run_game).grid(row=3, column=0, sticky="ew",
+                                                  padx=20, pady=(0, 12))
+
+        grid = ctk.CTkFrame(right, fg_color="transparent")
+        grid.grid(row=4, column=0, sticky="ew", padx=20)
+        for c in range(3):
+            grid.grid_columnconfigure(c, weight=1, uniform="btn")
+        acts = [
+            ("语法检查", self.run_check, False),
+            ("无头试跑", self.run_auto, False),
+            ("编辑剧本", self.edit_script, False),
+            ("打包发布", self.run_pack, False),
+            ("发布为 HTML", self.run_html, True),
+            ("转为 Ren'Py", self.run_stm2renpy, True),
+            ("打开文件夹", self.open_folder, False),
+            ("内嵌引擎", self.embed_engine, False),
+            ("清空日志", self.clear_log, False),
+            ("移除项目", self.remove_project, False),
         ]
-        grid = ttk.Frame(pad, style="Card.TFrame")
-        grid.pack(anchor="w")
-        for i, (text, fn, style) in enumerate(btns):
-            b = ttk.Button(grid, text=text, command=fn, style=style, width=12)
-            b.grid(row=i // 2, column=i % 2, padx=(0, 8), pady=4, sticky="w")
+        for i, (text, fn, hot) in enumerate(acts):
+            danger = text == "移除项目"
+            if hot and not danger:
+                fg, bw, border, tc, hv = ACCENT, 0, ACCENT, "#ffffff", ACCENT_HOVER
+            elif danger:
+                fg, bw, border, tc, hv = "transparent", 1, DANGER, DANGER, ("#f7e5e3", "#3a2320")
+            else:
+                fg, bw, border, tc, hv = "transparent", 1, BORDER, INK, HOVER
+            ctk.CTkButton(grid, text=text, height=38, corner_radius=10,
+                          font=self.f(12.5), fg_color=fg, border_width=bw,
+                          border_color=border, text_color=tc, hover_color=hv,
+                          command=fn).grid(row=i // 3, column=i % 3, sticky="ew",
+                                           padx=5, pady=5)
 
-        ttk.Label(pad, text="危险操作", style="Sub.TLabel").pack(anchor="w",
-                                                                pady=(14, 2))
-        ttk.Button(pad, text="移除项目", command=self.remove_project).pack(anchor="w")
+        ctk.CTkLabel(right,
+                     text="内嵌引擎 —— 把 stmg/ 拷进项目，项目完全开放，改项目里的 stmg/*.py 即可自定义\n"
+                          "发布为 HTML —— 生成能直接双击 / 丢上网页的版本\n"
+                          "转为 Ren'Py —— 把剧本转成 .rpy，产物在 dist/<项目名>_renpy/",
+                     font=self.f(11), text_color=SUB, anchor="w", justify="left"
+                     ).grid(row=5, column=0, sticky="ew", padx=20, pady=(12, 16))
 
-        # ---- 下：日志 ----
-        bottom = ttk.Frame(self.root, padding=(16, 0, 16, 14))
-        bottom.pack(fill="both")
-        bar = ttk.Frame(bottom)
-        bar.pack(fill="x")
-        ttk.Label(bar, text="输出").pack(side="left")
-        ttk.Button(bar, text="清空", command=self.clear_log).pack(side="right")
-        self.log = tk.Text(bottom, height=11, bg="#1e2030", fg="#d8dae8",
-                           insertbackground="#d8dae8", relief="flat", wrap="word",
-                           font=("Consolas", 9), padx=10, pady=8)
-        self.log.pack(fill="both", expand=True, pady=(4, 0))
+        # ---------- 下：日志 ----------
+        bottom = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        bottom.grid(row=2, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 18))
+        bottom.grid_columnconfigure(0, weight=1)
+
+        bar = ctk.CTkFrame(bottom, fg_color="transparent")
+        bar.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
+        bar.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(bar, text="输出", font=self.f(13, True), text_color=INK
+                     ).grid(row=0, column=0, sticky="w")
+        self.lbl_state = ctk.CTkLabel(bar, text="就绪", font=self.f(11.5), text_color=SUB)
+        self.lbl_state.grid(row=0, column=1, sticky="e")
+
+        self.log = ctk.CTkTextbox(bottom, height=150, corner_radius=10,
+                                  fg_color=LOG_BG, text_color=LOG_FG,
+                                  font=self.f(11.5), wrap="word")
+        self.log.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
         self.log.configure(state="disabled")
 
     # ------------------------------------------------------------------ #
@@ -170,26 +228,43 @@ class Launcher(object):
     # ------------------------------------------------------------------ #
     def refresh(self, keep=None):
         self.projects = proj.list_projects(self.cfg.get("recent"))
-        self.listbox.delete(0, tk.END)
+        for w in self.listbox.winfo_children():
+            w.destroy()
         sel = keep if keep is not None else (self.current or {}).get("path")
-        for i, p in enumerate(self.projects):
-            mark = "" if os.path.normcase(os.path.dirname(p["path"])) == \
-                os.path.normcase(proj.PROJECTS_DIR) else "  (外部)"
-            self.listbox.insert(tk.END, "  %s%s" % (p["title"] or p["name"], mark))
-            if sel and os.path.normcase(p["path"]) == os.path.normcase(sel):
-                self.listbox.selection_set(i)
-                self.show(p)
-        if self.projects and not sel:
-            self.listbox.selection_set(0)
-            self.show(self.projects[0])
+        self._rows = {}
+        for p in self.projects:
+            outside = os.path.normcase(os.path.dirname(p["path"])) != \
+                os.path.normcase(proj.PROJECTS_DIR)
+            name = (p["title"] or p["name"]) + ("   (外部)" if outside else "")
+            b = ctk.CTkButton(self.listbox, text=name, anchor="w", height=38,
+                              corner_radius=9, font=self.f(12.5),
+                              fg_color="transparent", text_color=INK, hover_color=HOVER,
+                              command=lambda pp=p: self.show(pp))
+            b.pack(fill="x", pady=2)
+            self._rows[os.path.normcase(p["path"])] = b
 
-    def on_pick(self, _event=None):
-        s = self.listbox.curselection()
-        if s:
-            self.show(self.projects[s[0]])
+        if not self.projects:
+            self.current = None
+            self.lbl_title.configure(text="还没有项目")
+            self.lbl_path.configure(text="点左下角「新建项目」，会生成一份能直接跑的模板。")
+            self.lbl_meta.configure(text="")
+            return
+
+        target = None
+        for p in self.projects:
+            if sel and os.path.normcase(p["path"]) == os.path.normcase(sel):
+                target = p
+        target = target or self.projects[0]
+        self.show(target)
 
     def show(self, p):
         self.current = p
+        for k, b in self._rows.items():
+            if os.path.normcase(p["path"]) == k:
+                b.configure(fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                            text_color="#ffffff")
+            else:
+                b.configure(fg_color="transparent", hover_color=HOVER, text_color=INK)
         self.lbl_title.configure(text=p["title"] or p["name"])
         self.lbl_path.configure(text=p["path"])
         self.lbl_meta.configure(text="%s 修改 · %s 句台词 · %s"
@@ -197,39 +272,43 @@ class Launcher(object):
         proj.push_recent(p["path"])
 
     # ------------------------------------------------------------------ #
-    # 日志
+    # 日志 / 状态
     # ------------------------------------------------------------------ #
     def log_line(self, text):
-        self.queue.put(text)
+        self.q.put(text)
 
     def clear_log(self):
         self.log.configure(state="normal")
-        self.log.delete("1.0", tk.END)
+        self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
     def _poll(self):
+        dirty = False
         while True:
             try:
-                text = self.queue.get_nowait()
+                text = self.q.get_nowait()
             except queue.Empty:
                 break
-            self.log.configure(state="normal")
-            self.log.insert(tk.END, text + "\n")
-            self.log.see(tk.END)
+            if not dirty:
+                self.log.configure(state="normal")
+                dirty = True
+            self.log.insert("end", text + "\n")
+            self.log.see("end")
+        if dirty:
             self.log.configure(state="disabled")
-        self.root.after(120, self._poll)
+        self.lbl_state.configure(text="忙…" if self.busy else "就绪",
+                                 text_color=ACCENT if self.busy else SUB)
+        self.after(120, self._poll)
 
-    def _run(self, args, title, cwd=None, capture=True):
-        """子进程跑东西，输出实时丢进日志。"""
+    def _run(self, args, title, capture=True):
         if self.busy:
-            messagebox.showinfo("等一下", "上一个任务还没跑完。")
+            InfoDialog(self, "等一下", "上一个任务还没跑完。")
             return
         self.busy = True
         self.log_line("")
-        self.log_line("=" * 58)
+        self.log_line("=" * 62)
         self.log_line("$ " + " ".join('"%s"' % a if " " in a else a
-                                      for a in [os.path.basename(args[0])]
-                                      + args[1:]))
+                                      for a in [os.path.basename(args[0])] + args[1:]))
 
         def worker():
             try:
@@ -237,7 +316,7 @@ class Launcher(object):
                 if capture:
                     kw["stdout"] = subprocess.PIPE
                     kw["stderr"] = subprocess.STDOUT
-                p = subprocess.Popen(args, cwd=cwd or HERE,
+                p = subprocess.Popen(args, cwd=HERE,
                                      env=dict(os.environ, PYTHONIOENCODING="utf-8"),
                                      **kw)
                 if capture and p.stdout:
@@ -255,20 +334,27 @@ class Launcher(object):
 
     def _need(self):
         if not self.current:
-            messagebox.showinfo("先选一个项目", "左边列表里点一个项目。")
+            InfoDialog(self, "先选一个项目", "左边列表里点一个项目。")
             return False
         return True
 
     # ------------------------------------------------------------------ #
-    # 操作
+    # 主操作
     # ------------------------------------------------------------------ #
+    def _local_start(self):
+        """项目内嵌了引擎（带 start.py + stmg/）就用项目自己的。"""
+        if not self.current:
+            return START
+        s = os.path.join(self.current["path"], "start.py")
+        return s if os.path.isfile(s) else START
+
     def run_game(self):
         if not self._need():
             return
         script = proj.script_of(self.current["path"])
         self.log_line("启动游戏：%s" % self.current["title"])
         try:
-            subprocess.Popen([PY, START, script], cwd=self.current["path"],
+            subprocess.Popen([PY, self._local_start(), script], cwd=self.current["path"],
                              env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         except Exception as e:                         # noqa: BLE001
             self.log_line("启动失败：%s" % e)
@@ -276,19 +362,58 @@ class Launcher(object):
     def run_check(self):
         if not self._need():
             return
+        if self._local_start() != START:
+            # 内嵌引擎的项目：用项目自己的引擎查，改动 stmg/ 也能反映出来
+            self._run([PY, self._local_start(), "--check",
+                       proj.script_of(self.current["path"])], "语法检查")
+            return
         self._run([PY, CHECK, self.current["path"], "--verbose"], "语法检查")
 
     def run_auto(self):
         if not self._need():
             return
-        self._run([PY, START, "--auto", proj.script_of(self.current["path"])],
+        self._run([PY, self._local_start(), "--auto", proj.script_of(self.current["path"])],
                   "无头试跑")
+
+    def embed_engine(self):
+        if not self._need():
+            return
+        p = self.current["path"]
+        if os.path.isfile(os.path.join(p, "stmg", "__init__.py")):
+            self.log_line("这个项目已经内嵌引擎了。想更新就删掉项目里的 stmg/ 再点一次。")
+            return
+        self.log_line("内嵌引擎到项目 %s ..." % self.current["name"])
+        done = proj.embed_engine(p)
+        self.log_line("完成，共 %d 个文件。直接改项目里的 stmg/*.py 就能自定义引擎，"
+                      "只影响这个项目，不用动启动器源码。" % len(done))
 
     def run_pack(self):
         if not self._need():
             return
         out = os.path.join(HERE, "dist", self.current["name"])
         self._run([PY, PACK, self.current["path"], "--out", out], "打包发布")
+
+    def run_html(self):
+        if not self._need():
+            return
+        dlg = HtmlDialog(self)
+        if not dlg.result:
+            return
+        out = os.path.join(HERE, "dist", "%s_web" % self.current["name"])
+        args = [PY, HTMLPUB, self.current["path"], "--out", out,
+                "--engine", dlg.result["engine"]]
+        if dlg.result["assets"] == "inline":
+            args.append("--inline")
+        elif dlg.result["assets"] == "none":
+            args.append("--no-assets")
+        self._run(args, "发布为 HTML")
+        self.log_line("产物：%s —— 双击 index.html 就能玩。" % out)
+
+    def run_stm2renpy(self):
+        if not self._need():
+            return
+        out = os.path.join(HERE, "dist", "%s_renpy" % self.current["name"])
+        self._run([PY, STM2RPY, self.current["path"], "--out", out], "转为 Ren'Py")
 
     def edit_script(self):
         if not self._need():
@@ -304,30 +429,33 @@ class Launcher(object):
         if not self._need():
             return
         try:
-            os.startfile(self.current["path"])         # noqa: S606
+            os.startfile(self.current["path"])          # noqa: S606
         except Exception as e:                         # noqa: BLE001
             self.log_line("打不开：%s" % e)
 
     def new_project(self):
-        dlg = NewProjectDialog(self.root)
+        dlg = NewProjectDialog(self)
         if not dlg.result:
             return
         try:
             path = proj.create_project(dlg.result["name"], dlg.result["title"],
                                        dlg.result["size"])
         except OSError as e:
-            messagebox.showerror("建不了", str(e))
+            InfoDialog(self, "建不了", str(e))
             return
         self.log_line("新建项目：%s" % path)
-        self.log_line("  已经把 script.stm / options.stm / 素材文件夹都排好了。")
+        self.log_line("  已排好 script.stm / options.stm / 素材文件夹。")
+        self.log_line("  custom/gui.py —— 改界面（对话框位置、标题图、标题曲…）")
+        self.log_line("  custom/markdown.py —— 加自己的内联标记")
         self.refresh(keep=path)
 
     def add_project(self):
+        from tkinter import filedialog
         d = filedialog.askdirectory(title="选一个含 script.stm 的项目文件夹")
         if not d:
             return
         if not proj.is_project(d):
-            messagebox.showwarning("不是项目", "这个文件夹里没有 script.stm。")
+            InfoDialog(self, "不是项目", "这个文件夹里没有 script.stm。")
             return
         proj.push_recent(d)
         self.refresh(keep=d)
@@ -337,19 +465,16 @@ class Launcher(object):
         if not self._need():
             return
         p = self.current
-        # 破坏性操作：先说清楚动什么，再要一次确认
-        ok = messagebox.askyesno(
-            "移除项目",
+        ok = ConfirmDialog(
+            self, "移除项目",
             "要把这个项目从列表里移走吗？\n\n"
             "项目：%s\n路径：%s\n\n"
-            "注意：不是删除。整个文件夹会被挪到\n"
-            "projects\\_trash\\ 下面，随时能拖回来。"
-            % (p["title"], p["path"]))
+            "注意：不是删除。整个文件夹会被挪到\nprojects\\_trash\\ 下面，随时能拖回来。"
+            % (p["title"], p["path"])).result
         if not ok:
             return
         if os.path.normcase(os.path.dirname(p["path"])) != \
                 os.path.normcase(proj.PROJECTS_DIR):
-            # 引擎外的项目，只从列表里摘掉，绝不动磁盘
             cfg = proj.load_cfg()
             cfg["recent"] = [x for x in cfg.get("recent", [])
                              if os.path.normcase(x) != os.path.normcase(p["path"])]
@@ -358,57 +483,132 @@ class Launcher(object):
         else:
             dst = proj.trash_project(p["path"])
             self.log_line("已挪到回收处：%s" % dst)
+        self.current = None
         self.refresh(keep=None)
 
+    def on_mode(self, value):
+        ctk.set_appearance_mode({"跟随系统": "system", "浅色": "light",
+                                 "深色": "dark"}[value])
 
-class NewProjectDialog(tk.Toplevel):
-    def __init__(self, master):
-        tk.Toplevel.__init__(self, master)
-        self.title("新建项目")
-        self.configure(bg=BG)
-        self.resizable(False, False)
+
+# --------------------------------------------------------------------------- #
+# 对话框
+# --------------------------------------------------------------------------- #
+class BaseDialog(ctk.CTkToplevel):
+    def __init__(self, master, title, w=420, h=260):
+        super().__init__(master)
         self.result = None
+        self.title(title)
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
         self.transient(master)
-        self.grab_set()
+        self.geometry("%dx%d" % (w, h))
+        self.after(60, self._center)
+        self.after(140, self.grab_set)
 
-        f = ttk.Frame(self, padding=18)
-        f.pack(fill="both", expand=True)
+    def _center(self):
+        try:
+            self.update_idletasks()
+            px, py = self.master.winfo_rootx(), self.master.winfo_rooty()
+            pw, ph = self.master.winfo_width(), self.master.winfo_height()
+            x = px + (pw - self.winfo_width()) // 2
+            y = py + (ph - self.winfo_height()) // 3
+            self.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except Exception:                              # noqa: BLE001
+            pass
 
-        ttk.Label(f, text="项目文件夹名").grid(row=0, column=0, sticky="w", pady=4)
-        self.e_name = ttk.Entry(f, width=30)
-        self.e_name.grid(row=0, column=1, pady=4)
-        self.e_name.insert(0, "my_story")
 
-        ttk.Label(f, text="游戏标题").grid(row=1, column=0, sticky="w", pady=4)
-        self.e_title = ttk.Entry(f, width=30)
-        self.e_title.grid(row=1, column=1, pady=4)
-        self.e_title.insert(0, "我的第一个游戏")
-
-        ttk.Label(f, text="分辨率").grid(row=2, column=0, sticky="w", pady=4)
-        self.e_size = ttk.Combobox(f, width=27, state="readonly",
-                                   values=["1280x720", "1920x1080",
-                                           "854x480", "800x600", "1024x576"])
-        self.e_size.current(0)
-        self.e_size.grid(row=2, column=1, pady=4)
-
-        ttk.Label(f, text="会自动生成 script.stm、options.stm 和素材文件夹。",
-                  foreground=SUB).grid(row=3, column=0, columnspan=2,
-                                       sticky="w", pady=(10, 0))
-        btns = ttk.Frame(f)
-        btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(btns, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(btns, text="创建", style="Go.TButton",
-                   command=self.ok).pack(side="right", padx=6)
-
-        self.e_name.focus_set()
-        self.bind("<Return>", lambda _e: self.ok())
-        self.bind("<Escape>", lambda _e: self.destroy())
+class InfoDialog(BaseDialog):
+    def __init__(self, master, title, text):
+        super().__init__(master, title, 430, 210)
+        f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        f.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkButton(f, text="知道了", height=38, corner_radius=10, font=master.f(13),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self.destroy).pack(side="bottom", fill="x",
+                                                 padx=18, pady=18)
+        ctk.CTkLabel(f, text=title, font=master.f(15, True), text_color=INK,
+                     anchor="w").pack(anchor="w", padx=18, pady=(18, 6))
+        ctk.CTkLabel(f, text=text, font=master.f(12.5), text_color=SUB, anchor="w",
+                     justify="left", wraplength=350).pack(anchor="w", padx=18)
         self.wait_window(self)
 
-    def ok(self):
+
+class ConfirmDialog(BaseDialog):
+    def __init__(self, master, title, text):
+        super().__init__(master, title, 460, 300)
+        f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        f.pack(fill="both", expand=True, padx=14, pady=14)
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(side="bottom", fill="x", padx=18, pady=18)
+        ctk.CTkButton(row, text="取消", height=38, corner_radius=10, font=master.f(13),
+                      fg_color="transparent", border_width=1, border_color=BORDER,
+                      text_color=INK, hover_color=HOVER,
+                      command=self.destroy).pack(side="left", expand=True, fill="x")
+        ctk.CTkButton(row, text="确定", height=38, corner_radius=10, font=master.f(13),
+                      fg_color=DANGER, hover_color="#a33b33",
+                      command=self._ok).pack(side="left", expand=True, fill="x",
+                                             padx=(10, 0))
+        ctk.CTkLabel(f, text=title, font=master.f(15, True), text_color=INK,
+                     anchor="w").pack(anchor="w", padx=18, pady=(18, 6))
+        ctk.CTkLabel(f, text=text, font=master.f(12.5), text_color=SUB, anchor="w",
+                     justify="left", wraplength=380).pack(anchor="w", padx=18)
+        self.wait_window(self)
+
+    def _ok(self):
+        self.result = True
+        self.destroy()
+
+
+class NewProjectDialog(BaseDialog):
+    def __init__(self, master):
+        super().__init__(master, "新建项目", 470, 400)
+        f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        f.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(f, text="新建项目", font=master.f(16, True), text_color=INK
+                     ).pack(anchor="w", padx=20, pady=(18, 10))
+
+        def field(label, value, values=None):
+            ctk.CTkLabel(f, text=label, font=master.f(12.5), text_color=SUB
+                         ).pack(anchor="w", padx=20, pady=(6, 2))
+            if values:
+                w = ctk.CTkOptionMenu(f, values=values, height=36, font=master.f(13))
+                w.set(value)
+            else:
+                w = ctk.CTkEntry(f, height=36, font=master.f(13))
+                w.insert(0, value)
+            w.pack(fill="x", padx=20)
+            return w
+
+        self.e_name = field("项目文件夹名", "my_story")
+        self.e_title = field("游戏标题", "我的第一个游戏")
+        self.e_size = field("分辨率", "1280x720",
+                            ["1280x720", "1920x1080", "1024x576", "854x480", "800x600"])
+
+        ctk.CTkLabel(f, text="会生成 script.stm、options.stm、素材文件夹，\n"
+                             "以及 custom/gui.py（改界面）和 custom/markdown.py（改标记）。",
+                     font=master.f(11.5), text_color=SUB, justify="left", anchor="w"
+                     ).pack(anchor="w", padx=20, pady=(12, 0))
+
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(side="bottom", fill="x", padx=20, pady=18)
+        ctk.CTkButton(row, text="取消", height=38, corner_radius=10, font=master.f(13),
+                      fg_color="transparent", border_width=1, border_color=BORDER,
+                      text_color=INK, hover_color=HOVER,
+                      command=self.destroy).pack(side="right", expand=True, fill="x",
+                                                 padx=(10, 0))
+        ctk.CTkButton(row, text="创建", height=38, corner_radius=10, font=master.f(13),
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self._ok).pack(side="right", expand=True, fill="x")
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.e_name.focus_set()
+        self.wait_window(self)
+
+    def _ok(self):
         name = self.e_name.get().strip()
         if not name:
-            messagebox.showwarning("还差一步", "项目文件夹名不能为空。", parent=self)
+            self.e_name.configure(border_color=DANGER)
             return
         self.result = {"name": name,
                        "title": self.e_title.get().strip() or name,
@@ -416,20 +616,80 @@ class NewProjectDialog(tk.Toplevel):
         self.destroy()
 
 
+class HtmlDialog(BaseDialog):
+    """发布为 HTML 的选项。"""
+
+    def __init__(self, master):
+        super().__init__(master, "发布为 HTML", 500, 470)
+        f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        f.pack(fill="both", expand=True, padx=14, pady=14)
+        ctk.CTkLabel(f, text="发布为 HTML", font=master.f(16, True), text_color=INK
+                     ).pack(anchor="w", padx=20, pady=(18, 2))
+        ctk.CTkLabel(f, text="产物在 dist/<项目名>_web/，双击 index.html 就能玩。",
+                     font=master.f(11.5), text_color=SUB, anchor="w"
+                     ).pack(anchor="w", padx=20)
+
+        ctk.CTkLabel(f, text="引擎", font=master.f(12.5), text_color=SUB, anchor="w"
+                     ).pack(anchor="w", padx=20, pady=(16, 4))
+        self.v_engine = ctk.CTkSegmentedButton(f, values=["WebAssembly", "内置解释器"],
+                                               height=34, font=master.f(12.5))
+        self.v_engine.set("WebAssembly")
+        self.v_engine.pack(fill="x", padx=20)
+        ctk.CTkLabel(f, text="WebAssembly：浏览器里跑真正的 Python 引擎，和桌面版一致\n"
+                             "（首次打开要联网下一份 Pyodide，约 8MB，之后走缓存）\n"
+                             "内置解释器：完全离线，行为一致但引擎版本可能落后",
+                     font=master.f(11), text_color=SUB, justify="left", anchor="w"
+                     ).pack(anchor="w", padx=20, pady=(6, 0))
+
+        ctk.CTkLabel(f, text="素材", font=master.f(12.5), text_color=SUB, anchor="w"
+                     ).pack(anchor="w", padx=20, pady=(14, 4))
+        self.v_assets = ctk.CTkSegmentedButton(
+            f, values=["assets 目录", "内联单文件", "不带素材"], height=34,
+            font=master.f(12.5))
+        self.v_assets.set("assets 目录")
+        self.v_assets.pack(fill="x", padx=20)
+        ctk.CTkLabel(f, text="assets 目录：整个文件夹可以上传到网页\n"
+                             "内联单文件：素材全塞进一个 HTML，方便发人（会变大）\n"
+                             "不带素材：只出播放器，缺图显示占位块",
+                     font=master.f(11), text_color=SUB, justify="left", anchor="w"
+                     ).pack(anchor="w", padx=20, pady=(6, 0))
+
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(side="bottom", fill="x", padx=20, pady=18)
+        ctk.CTkButton(row, text="取消", height=38, corner_radius=10, font=master.f(13),
+                      fg_color="transparent", border_width=1, border_color=BORDER,
+                      text_color=INK, hover_color=HOVER,
+                      command=self.destroy).pack(side="right", expand=True, fill="x",
+                                                 padx=(10, 0))
+        ctk.CTkButton(row, text="开始发布", height=38, corner_radius=10,
+                      font=master.f(13), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self._ok).pack(side="right", expand=True, fill="x")
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.wait_window(self)
+
+    def _ok(self):
+        self.result = {
+            "engine": "wasm" if self.v_engine.get() == "WebAssembly" else "js",
+            "assets": {"assets 目录": "copy", "内联单文件": "inline",
+                       "不带素材": "none"}[self.v_assets.get()],
+        }
+        self.destroy()
+
+
+# --------------------------------------------------------------------------- #
 def main():
     proj.ensure_dirs()
-    root = tk.Tk()
-    app = Launcher(root)
+    app = Launcher()
 
     def on_close():
         proj.save_cfg(dict(proj.load_cfg(),
-                           window="%dx%d" % (root.winfo_width(), root.winfo_height())))
-        root.destroy()
+                           window="%dx%d" % (app.winfo_width(), app.winfo_height())))
+        app.destroy()
 
-    root.protocol("WM_DELETE_WINDOW", on_close)
+    app.protocol("WM_DELETE_WINDOW", on_close)
     app.log_line("STMG 启动器就绪。左边选项目，右边点按钮。")
-    app.log_line("第一次用？点「新建项目」，会自动生成一份能跑的模板。")
-    root.mainloop()
+    app.log_line("第一次用？点「新建项目」，会生成一份能跑的模板。")
+    app.mainloop()
 
 
 if __name__ == "__main__":

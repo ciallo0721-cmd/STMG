@@ -1,3 +1,6 @@
-# STMG 引擎只需要这一个依赖。
-# 启动器（launcher.py）只用标准库的 tkinter，不需要额外装东西。
+# 引擎本体只需要这一个依赖。
 pygame>=2.5
+
+# 启动器（launcher.py）的界面用 CustomTkinter。
+# 没装的话启动器会提示你怎么装；引擎和游戏本身不需要它。
+customtkinter>=5.2

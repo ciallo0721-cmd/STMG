@@ -17,7 +17,15 @@ DEMO_DIR = os.path.join(ROOT, "demo")
 CFG_PATH = os.path.join(ROOT, ".stmg_launcher.json")
 
 ASSET_DIRS = ["bg", "png", "music", os.path.join("gui", "textbox"),
-              os.path.join("gui", "button")]
+              os.path.join("gui", "button"), "custom"]
+
+# 新建项目时会从 stmg/templates/ 拷过来的自定义文件
+CUSTOM_FILES = [("custom_gui.py", "gui.py"),
+                ("custom_markdown.py", "markdown.py")]
+
+# 内嵌引擎时跳过的目录 / 后缀（pyodide 约 13MB，发布 HTML 时另行拷贝）
+EMBED_SKIP_DIRS = {"__pycache__", "pyodide"}
+EMBED_SKIP_EXT = {".pyc"}
 
 TEMPLATE_SCRIPT = """<
 Size={size}
@@ -99,8 +107,30 @@ TEMPLATE_README = """# {title}
 | `png/` | 立绘、贴图 |
 | `music/` | BGM / 音效 / 语音 |
 | `gui/` | 文本框图片、按钮图片（没有就用默认样式） |
+| `custom/` | 界面配置和自定义标记（见下） |
 | `script.stm` | 主剧本 |
 | `options.stm` | 标题、加密口令、打包规则 |
+
+## 改界面
+
+`custom/gui.py` 里写 `CONFIG = {{...}}` 就能改界面：对话框位置大小、
+名字框颜色、立绘站位、标题背景图、标题曲……文件里每项都有注释和默认值，
+去掉 `#` 改数字即可。
+
+`custom/markdown.py` 用来加自己的内联标记（比如 `[w]` 当停顿）。
+
+两个文件删掉都能跑，引擎会退回默认外观。
+
+## 项目自带引擎（完全开放）
+
+这个项目目录里带着**完整的引擎源码**（`stmg/` 文件夹 + `start.py`）。
+
+- 跑游戏：双击 `start.bat`，或 `python start.py script.stm`
+- `python start.py --check script.stm` 只查语法，`--auto` 无头跑一遍
+
+想自定义引擎行为（渲染、界面、音频、语法……），**直接改本项目里的
+`stmg/*.py` 就行**——优先用的是项目自己这份，不影响启动器和其他项目。
+删掉 `stmg/` 和 `start.py` 也能跑，会自动退回启动器目录里的引擎。
 
 语法看引擎目录下的 `README.md`。
 """
@@ -231,7 +261,79 @@ def create_project(name, title=None, size="1280x720"):
         f.write(TEMPLATE_OPTIONS.format(title=title, key="change-me-%d" % int(time.time())))
     with open(os.path.join(path, "README.md"), "w", encoding="utf-8") as f:
         f.write(TEMPLATE_README.format(title=title, name=os.path.basename(path)))
+    copy_custom_files(path)
+    embed_engine(path)
     return path
+
+
+def embed_engine(path):
+    """把引擎本体（stmg/ 包 + start.py + start.bat）拷进项目，项目即完全自包含。
+
+    之后项目用自己的引擎跑：改项目里的 stmg/render.py、stmg/gui.py、
+    stmg/markdown.py 等只影响这个项目，不用碰启动器目录的源码。
+    已存在的文件不覆盖（size 相同的跳过），可以重复调用做增量更新。
+    返回拷贝 / 更新的文件列表（相对项目目录）。
+    """
+    pkg_src = os.path.dirname(os.path.abspath(__file__))          # stmg/
+    root = os.path.dirname(pkg_src)                                # STMG 根目录
+    pkg_dst = os.path.join(path, "stmg")
+    done = []
+
+    for dirpath, dirnames, filenames in os.walk(pkg_src):
+        rel = os.path.relpath(dirpath, pkg_src)
+        dirnames[:] = [d for d in dirnames if d not in EMBED_SKIP_DIRS]
+        dst_dir = pkg_dst if rel == "." else os.path.join(pkg_dst, rel)
+        os.makedirs(dst_dir, exist_ok=True)
+        for fn in sorted(filenames):
+            if os.path.splitext(fn)[1].lower() in EMBED_SKIP_EXT:
+                continue
+            s, d = os.path.join(dirpath, fn), os.path.join(dst_dir, fn)
+            try:
+                if os.path.exists(d) and os.path.getsize(s) == os.path.getsize(d):
+                    continue
+                shutil.copyfile(s, d)
+                done.append(os.path.relpath(d, path).replace("\\", "/"))
+            except OSError:
+                pass
+
+    src = os.path.join(root, "start.py")
+    if os.path.isfile(src) and not os.path.exists(os.path.join(path, "start.py")):
+        shutil.copyfile(src, os.path.join(path, "start.py"))
+        done.append("start.py")
+    # 项目专用 start.bat：只跑剧本，不试图开启动器
+    dst_bat = os.path.join(path, "start.bat")
+    if not os.path.exists(dst_bat):
+        with open(dst_bat, "w", encoding="ascii", newline="\r\n") as f:
+            f.write('@echo off\r\ncd /d "%~dp0"\r\n'
+                    'if exist ".venv\\Scripts\\python.exe" (\r\n'
+                    '    ".venv\\Scripts\\python.exe" start.py %*\r\n'
+                    ') else (\r\n'
+                    '    python start.py %*\r\n'
+                    ')\r\n'
+                    'if errorlevel 1 pause\r\n')
+        done.append("start.bat")
+    return done
+
+
+def copy_custom_files(path):
+    """把 custom/gui.py（界面配置）和 custom/markdown.py（自定义标记）放进去。
+
+    这两个文件是给用户随便改的：改界面尺寸、换标题图、换标题曲、加自己的
+    内联标记。删掉也不影响，引擎会退回默认外观。
+    """
+    tpl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+    dst_dir = os.path.join(path, "custom")
+    os.makedirs(dst_dir, exist_ok=True)
+    done = []
+    for src_name, dst_name in CUSTOM_FILES:
+        src = os.path.join(tpl, src_name)
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(dst_dir, dst_name)
+        if not os.path.exists(dst):
+            shutil.copyfile(src, dst)
+            done.append(dst_name)
+    return done
 
 
 def rename_project(path, new_name):

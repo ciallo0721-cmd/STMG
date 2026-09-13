@@ -9,7 +9,7 @@ import os
 import pygame
 
 from . import pack
-from .markdown import render as md_render
+from . import markdown as mdmod
 
 # 中文字体候选，按顺序找第一个系统里有的
 FONT_CANDIDATES = [
@@ -310,11 +310,11 @@ class Button(object):
         return None
 
 
-def draw_toasts(surface, fonts, toasts, w, start_y=12):
+def draw_toasts(surface, fonts, toasts, w, start_y=12, size=16):
     """右上角的 STM.display / STM.python 提示。"""
     y = start_y
     for text in toasts[-5:]:
-        f = fonts.get(16)
+        f = fonts.get(size)
         t = f.render(text[:48], True, (255, 255, 255))
         pad = 8
         box = pygame.Surface((t.get_width() + pad * 2, t.get_height() + pad),
@@ -326,4 +326,6 @@ def draw_toasts(surface, fonts, toasts, w, start_y=12):
 
 
 def md(text):
-    return md_render(text)
+    # 走模块属性而不是直接引用函数，这样项目的 custom/markdown.py
+    # 覆盖过 markdown.render 之后能立刻生效。
+    return mdmod.render(text)

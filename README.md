@@ -75,7 +75,10 @@ Question:
 - **带语法检查器** —— `--check` 逐行报错，五级错误分级，写错了不用开着窗口试
 - **加密发布** —— 一键把剧本和素材打包成 `.stmdec`，纯标准库实现，零额外依赖
 - **缺素材不崩** —— 图还没画好也能跑，引擎会自动画占位块
-- **图形化启动器** —— 项目管理、新建模板、检查、试跑、打包，点点鼠标就行
+- **图形化启动器** —— 项目管理、新建模板、检查、试跑、打包、发布，点点鼠标就行
+- **发布成网页** —— 一键生成能直接玩、能分享的 HTML，逻辑跑的是**真引擎**（WebAssembly，不是重写一遍）
+- **能转 Ren'Py** —— 剧本可以反向导出成 `.rpy`，想换引擎不用重写
+- **界面可自定义** —— 项目里的 `custom/gui.py` 随便改：对话框位置、名字框颜色、标题图、标题曲
 
 ---
 
@@ -115,10 +118,17 @@ Linux 上如果提示缺 `tkinter`，装一下：`sudo apt install python3-tk`�
 | 语法检查 | 逐行检查剧本，输出打在下面的日志区 |
 | 无头试跑 | 不开窗口，自动选第一个选项跑一遍，打印全部台词 |
 | 打包发布 | 生成加密的发布版到 `dist/` |
+| 发布为 HTML | 生成能直接玩 / 能分享的网页版到 `dist/<项目名>_web/` |
+| 转为 Ren'Py | 把剧本导出成 `.rpy` 到 `dist/<项目名>_renpy/` |
 | 编辑剧本 | 用系统默认编辑器打开 `script.stm` |
 | 打开文件夹 | 打开项目目录 |
 
-第一次用点「**新建项目**」，会生成一份能直接跑的模板（自带变量、选择支、询问输入的示例）。
+第一次用点「**新建项目**」，会生成一份能直接跑的模板（自带变量、选择支、询问输入的示例），
+另外还会给你 `custom/gui.py`（改界面）和 `custom/markdown.py`（加自己的内联标记）。
+
+> 启动器界面用的是 CustomTkinter，第一次跑 `pip install -r requirements.txt` 就会一起装上。
+> 没装的话启动器会告诉你装在哪，`STMG启动器.bat` 也会自动帮你装。
+> 引擎本身不需要它——启动器开不开得了，跟游戏能不能跑没关系。
 
 > 「移除项目」不会删文件，只会把整个文件夹挪到 `projects/_trash/`，随时可以拖回来。
 
@@ -384,18 +394,25 @@ stm.os(read("C:/path/to/name.txt"))
 
 ```
 STMG/
-├── launcher.py              图形化启动器（tkinter）
-├── STMG启动器.bat           双击打开启动器
+├── launcher.py              图形化启动器（CustomTkinter）
+├── STMG启动器.bat           双击打开启动器（缺依赖会自动装）
 ├── start.py                 剧本启动器：跑一个 script.stm
 ├── start.bat                Windows 快捷入口
 ├── stmg/                    ★ 引擎核心
 │   ├── parser.py            .stm → 语句树
 │   ├── runtime.py           语句树 → 事件流
 │   ├── session.py           推进器：当前显示什么 / 存读档
-│   ├── gui.py               pygame 主界面
+│   ├── gui.py               pygame 主界面（外观由 uiconf 驱动）
+│   ├── uiconf.py            界面配置：默认值 + 读项目里的 custom/gui.py
 │   ├── render.py            排版、文本框、立绘布局
 │   ├── audio.py             BGM / 音效 / 语音
 │   ├── markdown.py          内联标记 → 样式片段
+│   ├── web_bridge.py        网页版桥：在 Pyodide 里跑这个真引擎
+│   ├── webplayer.html       网页播放器模板（发布 HTML 用它渲染）
+│   ├── pyodide/             WebAssembly 版 CPython 本体（tools/get_pyodide.py 下的，约 13MB）
+│   ├── templates/           新建项目时拷过去的两份自定义文件
+│   │   ├── custom_gui.py        界面配置模板
+│   │   └── custom_markdown.py   自定义标记模板
 │   ├── options.py           options.stm 解析
 │   ├── save.py              存档槽
 │   ├── crypto.py            .stmdec 加解密
@@ -407,7 +424,11 @@ STMG/
 ├── stmenc/start.py          加密打包器
 ├── tools/
 │   ├── check.py             语法检查器
-│   └── selftest.py          引擎自检
+│   ├── selftest.py          引擎自检
+│   ├── renpy2stm.py         Ren'Py 工程 → STMG
+│   ├── stm2renpy.py         STMG → Ren'Py（反向）
+│   ├── htmlpub.py           STMG → 网页版（HTML）
+│   └── get_pyodide.py       把 Pyodide 拉到本地，网页版就能离线跑真引擎
 ├── demo/                    示例游戏（故意没有素材）
 └── projects/                你自己的项目放这里
 ```
@@ -427,7 +448,7 @@ python tools/check.py demo --verbose
 python tools/selftest.py
 ```
 
-自检覆盖 33 项，改完引擎先跑它比开窗口快得多。
+自检覆盖 48 项，改完引擎先跑它比开窗口快得多。
 
 ### Ren'Py 转换器
 
@@ -490,6 +511,198 @@ pip install pyinstaller
 
 ---
 
+## 发布为 HTML
+
+```bash
+python tools/htmlpub.py demo
+python tools/htmlpub.py projects/我的游戏 --out dist/我的游戏_web
+python tools/htmlpub.py demo --engine js       # 用页面内置解释器，完全离线
+python tools/htmlpub.py demo --inline          # 素材内联，出一个单文件 HTML
+python tools/htmlpub.py demo --no-assets       # 只出播放器，不带素材
+python tools/htmlpub.py demo --pyodide https://你的镜像/pyodide/v0.26.2/full/
+```
+
+产出：
+
+```
+dist/我的游戏_web/
+├── index.html      双击就能玩，也能直接丢到 GitHub Pages
+└── assets/         图片和音频
+```
+
+**引擎跑的是 Python，不是重写一遍。** 默认用 [Pyodide](https://pyodide.org/)（WebAssembly 里的
+CPython）在浏览器里加载 `stmg` 的 `parser.py` / `runtime.py`，剧本解析、变量求值、分支推进
+跟桌面版是**同一份代码**，所以网页上不会出现「和桌面版表现不一样」的问题。
+`stmg/web_bridge.py` 就是那层桥：JS 负责画界面收键盘，逻辑全交给 Python。
+
+### 先把 Pyodide 拉到本地（推荐）
+
+```bash
+python tools/get_pyodide.py           # 约 13MB，下到 stmg/pyodide/
+```
+
+下过之后，`htmlpub.py` 会**自动把这份 Pyodide 打包进发布目录**（产物里的 `pyodide/`），
+浏览器从同目录加载：不联网、不跨域、打开就进。国内从 jsdelivr 拉那 9.6MB 的 wasm 经常
+拉不动，所以强烈建议先跑这一步。脚本有多源兜底（jsdelivr → fastly → unpkg → npmmirror），
+已经下好的文件会跳过，断了重跑就行。
+
+本地没有那份文件时才退回 CDN；CDN 也拉不到就会自动切到页面内置的轻量解释器，游戏照常能玩。
+
+> **一个浏览器限制**：`file://` 直接双击打开的网页**不能**加载 WebAssembly（浏览器不让 fetch wasm），
+> 这种情况页面会明确告诉你并自动回退。想跑 wasm 就用 http 服务打开（`python -m http.server`），
+> 或者直接上传到网站。
+
+### 自检：确认引擎真的在跑
+
+在地址后面加 `?selftest=1`，页面会后台跑一遍引擎，把事件流打在标题界面底部：
+
+```
+自检 [wasm] > bg > bgm > say > say > say > toast > say > choose > se > picture > say ...
+```
+
+开头的中括号是引擎来源：`[wasm]` = 真 Python 引擎跑在 WebAssembly 里，`[js]` = 内置解释器。
+发布前瞄一眼，就知道这份网页到底有没有吃到真引擎。
+
+网页版带的功能：打字机、点击 / 空格 / 回车推进、`Ctrl` 快进、`A` 自动、`H` 历史、
+存读档（浏览器 localStorage，1 个自动 + 6 个手动）、音量与文字速度设置、全屏、
+等比缩放铺满窗口。素材缺失会画占位块，和桌面版一个样。
+
+> 网页版没有 `R.api` 联网（浏览器里同步请求不现实，已挡掉）和 `stm.os` 文件操作
+> （虚拟文件系统里没有你的真磁盘）。这两样在剧本里出现会静默跳过。
+
+---
+
+## 转换成 Ren'Py
+
+想把 STMG 的剧本搬到 Ren'Py 上跑（或者给美术 / 配音用 Ren'Py 的工具链）：
+
+```bash
+python tools/stm2renpy.py projects/我的游戏
+python tools/stm2renpy.py projects/我的游戏 --out dist/我的游戏_renpy
+python tools/stm2renpy.py projects/我的游戏 --no-assets     # 只转剧本
+```
+
+产出：
+
+```
+dist/我的游戏_renpy/
+├── game/
+│   ├── script.rpy        剧本正文，label start: 开始
+│   ├── stmg_config.rpy   标题 / 分辨率 / 角色定义 / 图像定义 / 兼容变量
+│   ├── images/           从 bg/ png/ gui/ 拷过来的图
+│   └── audio/            从 music/ 拷过来的音频
+└── 转换报告.md            转换统计 + 需要手工处理的地方
+```
+
+装好 Ren'Py SDK，新建一个空工程，把 `game/` 里的东西拷进去就能跑。
+
+对应关系：
+
+| STMG | Ren'Py |
+|---|---|
+| `S.character("角色1")` | `define 角色1 = Character("角色1")` |
+| `S.cg("bg/room.png")` | `image bg_room = ...` + `scene bg_room` |
+| `S.character("png/x.png", pos="left", tag="菲")` | `image 菲 x = ...` + `show 菲 x at left` |
+| `S.play / sound / voice / stop` | `play music / sound / voice`、`stop music` |
+| `S.hide("菲")` / `S.hide("sprite")` | `hide 菲` / 逐个 hide 在场立绘 |
+| `S.jump("x")` / `S.end()` | `jump x` / `jump stmg_ending` |
+| `SET 好感度 = 好感度 + 10` | `$ 好感度 = 好感度 + 10` |
+| `Choose:` + `If "选项":` | `menu` + `if "选项" in stmg_chosen` |
+| `Question:` | `$ stmg_answer = renpy.input(...)` |
+| `"前缀" + STM.ANSWER + "后缀"` | `"前缀[stmg_answer]后缀"` |
+| `**粗体**` `[color=]` `[size=]` | `{b}` `{color=}` `{size=}` |
+
+转不了的会**写进转换报告**，不会静默丢掉：`stm.os` 文件操作、`R.api` 联网、
+`STM.python` 扩展库、嵌套在分支里的 `label`、等宽标记（Ren'Py 没有对应 tag）。
+
+---
+
+## 自定义界面与引擎
+
+新建项目时引擎会**整套内嵌**进项目目录（`stmg/` 包 + `start.py` + `start.bat`），
+项目完全自包含、完全开放：
+
+```
+我的游戏/
+├── script.stm          主剧本
+├── options.stm         配置
+├── start.py / start.bat  项目自己的启动入口
+├── stmg/               ★ 完整引擎源码（gui.py / render.py / markdown.py / parser.py ...）
+├── custom/gui.py       界面配置
+└── custom/markdown.py  自定义内联标记
+```
+
+- 跑游戏直接双击项目里的 `start.bat`，用的是**项目自己那份引擎**
+- 想魔改引擎（渲染、界面、音频、语法……）**直接改项目里的 `stmg/*.py`**，
+  只影响这个项目，不用碰启动器目录的源码
+- 启动器跑游戏 / 语法检查 / 无头试跑时也会优先用项目内嵌的引擎
+- 老项目想补：启动器里点「**内嵌引擎**」按钮即可（增量拷贝，不覆盖你改过的文件；想升级引擎就删掉项目里的 `stmg/` 再点一次）
+- 删掉项目里的 `stmg/` 和 `start.py` 也能跑，会退回启动器目录的引擎
+
+新建项目时还会在 `custom/` 下生成两个文件，引擎启动时自动加载：
+
+```
+custom/gui.py         界面长什么样
+custom/markdown.py    内联标记怎么渲染
+```
+
+### custom/gui.py
+
+里面写一个 `CONFIG` 字典，只写想改的项，其余用引擎默认值：
+
+```python
+CONFIG = {
+    # 对话框：往左靠一点、矮一点、半透明
+    "box_x": 0.06, "box_w": 0.72, "box_h": 0.24, "box_alpha": 215,
+
+    # 名字框换成粉色，字大一点
+    "name_size": 26, "name_bg": (214, 120, 168),
+
+    # 立绘站位和大小
+    "sprite_x": {"left": 0.22, "center": 0.5, "right": 0.78},
+    "sprite_w": 0.38, "sprite_h": 0.82, "sprite_bottom": 0.80,
+
+    # 标题界面：背景图 + 标题曲
+    "title_bg": "bg/title.png",
+    "title_bgm": "music/title.mp3",
+    "title_top": (18, 20, 36), "title_bottom": (60, 40, 80),
+
+    # 选择支
+    "choice_w": 0.6, "choice_h": 60, "choice_gap": 20, "choice_size": 24,
+}
+```
+
+能改的项和默认值全在 `stmg/uiconf.py` 的 `DEFAULTS` 里，每条都有注释。图片 / 音乐写
+相对项目目录的路径，文件不存在会自动回退（比如标题背景图没放，就还是渐变）。
+写错了也不会崩，开发模式下右上角会弹一句提示。
+
+### custom/markdown.py
+
+默认长这样：
+
+```python
+from stmg import markdown as _md
+
+def render(text):
+    return _md.render(text)
+```
+
+想加自己的标记就在 `return` 之前动手：
+
+```python
+def render(text):
+    text = text.replace("[w]", "……")      # 自己的写法
+    return _md.render(text)                # 剩下的交给引擎
+```
+
+返回值是 run 列表（`{"t": 文字, "bold": ..., "color": ..., "size": ...}`），
+写法说明写在模板文件的注释里。改坏了会在游戏里提示，不会黑屏。
+
+> 网页版发布时也会读 `custom/gui.py`：文字大小、对话框高度、标题背景图会翻成 CSS；
+> 其余（名字框颜色、立绘站位…）是 pygame 专属的，网页用自己的一套。
+
+---
+
 ## 关于加密（重要）
 
 `.stmdec` 的文件格式是：
@@ -517,9 +730,15 @@ STMG + 版本 + salt + nonce + 密文 + HMAC-SHA256 校验
 - 立绘不支持缩放、旋转、表情差分（`at` 只认左右中）
 - 存档用「记录玩家选择 + 重放」实现；如果剧本里有随机数或 `R.api` 产生的分支，读档可能对不上
 - 没有 CG 回廊、多语言切换、跳过已读
-- `S.picture` 和立绘的位置是写死的，没做成可配置
+- `S.picture` 和立绘的位置走 `custom/gui.py` 的默认值，剧本里没法逐句改
 - 音频格式取决于 pygame，mp3 / wav / ogg 能放，flac 不行
 - 错误提示的措辞还偏开发者向
+- 网页版没有 `R.api` 联网（浏览器里同步请求不现实）和 `stm.os` 文件操作，
+  这两样在剧本里出现会静默跳过
+- 网页版的 WebAssembly 引擎需要 http 打开（`file://` 直开会被浏览器拦住 wasm），
+  另外发布目录会多出 `pyodide/`（约 13MB），介意体积可以用 `--pyodide cdn` 走 CDN
+- STMG → Ren'Py 是单向尽力转换：`stm.os` / `R.api` / `STM.python` / 嵌套 label
+  转不过去，会列在转换报告里等你手工处理
 
 ---
 
@@ -534,8 +753,8 @@ A：分支范围就是靠缩进判定的，缩进不对解析器会当你在写�
 **Q：能做成 exe 吗？**
 A：能。`stmenc/start.py` 会生成一个 `打包成exe.bat`，用 PyInstaller 封。
 
-**Q：为什么启动器是 tkinter，游戏却是 pygame？**
-A：启动器是开发工具，需要原生文件对话框和滚动列表，tkinter 是标准库、零依赖，更合适；游戏要的是渲染控制力，用 pygame。启动器连 pygame 都不需要，引擎坏了它照样能打开。
+**Q：为什么启动器是 CustomTkinter，游戏却是 pygame？**
+A：启动器是开发工具，要的是树形列表、面板、对话框这些现成控件，CustomTkinter 开箱就是现代观感（圆角、深浅色跟随系统），比自己写一套省事得多；游戏要的是像素级的渲染控制力，所以用 pygame。两者互不依赖——引擎坏了启动器照样开，反过来也一样。
 
 **Q：支持中文变量名吗？**
 A：支持。`SET 好感度 = 0` 完全合法。

@@ -1,0 +1,1167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>__STMG_TITLE__</title>
+<style>
+:root{
+  --accent:#7d8cff; --accent2:#ff8fc7;
+  --ink:#eef0f7; --sub:#9aa0b5;
+  --panel:rgba(16,18,26,.86);
+  --stroke:rgba(255,255,255,.13);
+  --radius:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#07080c;
+  font-family:__STMG_FONT__,system-ui,"Segoe UI",sans-serif;color:var(--ink)}
+body{-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+#app{position:fixed;inset:0;display:grid;place-items:center}
+#stage{position:relative;width:__STMG_W__px;height:__STMG_H__px;overflow:hidden;
+  background:#0a0c12;box-shadow:0 30px 90px rgba(0,0,0,.7);border-radius:6px;
+  transform-origin:center center;user-select:none}
+
+/* ---------- 图层 ---------- */
+.layer{position:absolute;inset:0;background-size:cover;background-position:center;
+  background-repeat:no-repeat;opacity:0;transition:opacity .25s ease}
+.layer.on{opacity:1}
+.ph{display:grid;place-items:center;text-align:center;padding:20px;white-space:pre-line;
+  font-size:15px;color:rgba(255,255,255,.62);letter-spacing:.5px;
+  text-shadow:0 1px 8px rgba(0,0,0,.5)}
+#spr-layer{position:absolute;inset:0;pointer-events:none}
+.spr{position:absolute;bottom:0;height:88%;background-size:contain;
+  background-position:bottom center;background-repeat:no-repeat;
+  opacity:0;transition:opacity .28s ease;filter:drop-shadow(0 12px 30px rgba(0,0,0,.45))}
+.spr.on{opacity:1}
+.spr.left{left:2%}
+.spr.center{left:50%;transform:translateX(-50%)}
+.spr.right{right:2%}
+
+/* ---------- 对话框 ---------- */
+#dialogue{position:absolute;left:5.5%;right:5.5%;bottom:4%;min-height:__STMG_BOX_H__%;
+  padding:30px 34px 26px;border-radius:var(--radius);
+  background:linear-gradient(180deg,rgba(12,14,22,.84),rgba(12,14,22,.94));
+  border:1px solid var(--stroke);backdrop-filter:blur(14px);
+  box-shadow:0 22px 50px rgba(0,0,0,.5);
+  opacity:0;transform:translateY(14px);transition:opacity .22s,transform .22s;
+  pointer-events:none;display:flex;flex-direction:column}
+#dialogue.on{opacity:1;transform:none;pointer-events:auto;cursor:pointer}
+#namebox{position:absolute;top:-17px;left:28px;padding:7px 22px;border-radius:999px;
+  font-size:19px;font-weight:700;letter-spacing:.6px;color:#fff;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:0 8px 20px rgba(0,0,0,.4);opacity:0;transition:opacity .18s}
+#namebox.on{opacity:1}
+#text{font-size:__STMG_FSIZE__px;line-height:1.95;letter-spacing:.4px;
+  word-break:break-word;white-space:pre-wrap;flex:1}
+#text .code{font-family:ui-monospace,Consolas,monospace;
+  background:rgba(255,255,255,.1);padding:1px 6px;border-radius:5px;font-size:.92em}
+#hint{position:absolute;right:26px;bottom:14px;font-size:15px;color:var(--accent2);
+  animation:bob 1.1s ease-in-out infinite;opacity:0;transition:opacity .2s}
+#hint.on{opacity:1}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(5px)}}
+
+/* ---------- 控制条 ---------- */
+#ctrl{position:absolute;right:5.5%;bottom:calc(4% + 24% + 14px);display:flex;gap:8px;
+  opacity:0;transition:opacity .2s}
+#ctrl.on{opacity:1}
+#ctrl button{padding:8px 15px;border-radius:10px;font-size:15px;color:var(--ink);
+  background:rgba(12,14,22,.7);border:1px solid var(--stroke);backdrop-filter:blur(8px);
+  transition:background .15s,transform .15s}
+#ctrl button:hover{background:rgba(125,140,255,.32);transform:translateY(-1px)}
+#ctrl button.act{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent}
+
+/* ---------- 覆盖层 ---------- */
+.ov{position:absolute;inset:0;display:none;z-index:20}
+.ov.on{display:block}
+.mask{position:absolute;inset:0;background:rgba(4,5,9,.72);backdrop-filter:blur(6px)}
+
+#title{text-align:center}
+#title.on{display:grid;place-items:center}
+#title .bg{position:absolute;inset:0;
+  background:radial-gradient(1200px 700px at 20% 10%,rgba(125,140,255,.3),transparent 60%),
+             radial-gradient(900px 600px at 85% 90%,rgba(255,143,199,.26),transparent 60%),
+             linear-gradient(160deg,#0b0d15,#131726 60%,#0a0b11)}
+#title .inner{position:relative;z-index:2}
+#title h1{font-size:72px;font-weight:800;letter-spacing:4px;
+  background:linear-gradient(120deg,#fff,#c9d2ff 45%,#ffc3e2);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  text-shadow:0 12px 40px rgba(0,0,0,.5)}
+#title .ver{margin-top:10px;font-size:16px;color:var(--sub);letter-spacing:2px}
+#title .menu{margin-top:52px;display:flex;flex-direction:column;gap:14px;align-items:center}
+#title .menu button{width:280px;padding:15px 0;border-radius:14px;font-size:19px;
+  letter-spacing:3px;color:var(--ink);background:rgba(255,255,255,.06);
+  border:1px solid var(--stroke);backdrop-filter:blur(10px);transition:all .18s}
+#title .menu button:hover{background:rgba(125,140,255,.3);transform:translateY(-2px);
+  box-shadow:0 12px 26px rgba(0,0,0,.4)}
+#title .menu button.dim{opacity:.4;pointer-events:none}
+#engine-state{position:absolute;left:0;right:0;bottom:26px;font-size:14px;
+  color:var(--sub);letter-spacing:1px}
+
+#choose.on{display:grid;place-items:center}
+.choices{position:relative;z-index:2;display:flex;flex-direction:column;gap:18px;
+  width:min(760px,74%);animation:pop .22s ease}
+@keyframes pop{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.choices button{padding:22px 30px;border-radius:14px;font-size:22px;text-align:left;
+  color:var(--ink);background:linear-gradient(135deg,rgba(28,32,48,.92),rgba(18,20,30,.92));
+  border:1px solid var(--stroke);backdrop-filter:blur(10px);
+  transition:all .16s;position:relative;overflow:hidden}
+.choices button:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;
+  background:linear-gradient(180deg,var(--accent),var(--accent2));opacity:0;transition:opacity .16s}
+.choices button:hover{transform:translateX(6px);border-color:rgba(125,140,255,.6);
+  box-shadow:0 14px 32px rgba(0,0,0,.45)}
+.choices button:hover:before{opacity:1}
+
+#ask.on{display:grid;place-items:center}
+.askcard{position:relative;z-index:2;width:min(680px,72%);padding:32px;
+  border-radius:var(--radius);background:var(--panel);border:1px solid var(--stroke);
+  backdrop-filter:blur(14px);box-shadow:0 24px 60px rgba(0,0,0,.5);animation:pop .22s ease}
+.askcard p{font-size:21px;margin-bottom:20px;line-height:1.7}
+.askrow{display:flex;gap:12px}
+.askrow input{flex:1;padding:14px 16px;border-radius:12px;font-size:18px;color:var(--ink);
+  background:rgba(255,255,255,.07);border:1px solid var(--stroke);outline:none}
+.askrow input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(125,140,255,.22)}
+.askrow button{padding:14px 30px;border-radius:12px;font-size:17px;color:#fff;
+  background:linear-gradient(135deg,var(--accent),var(--accent2))}
+
+.panel{position:absolute;inset:6% 8%;z-index:2;display:flex;flex-direction:column;
+  border-radius:var(--radius);background:var(--panel);border:1px solid var(--stroke);
+  backdrop-filter:blur(16px);box-shadow:0 24px 60px rgba(0,0,0,.55);animation:pop .2s ease}
+.panel h2{font-size:22px;padding:22px 26px 14px;letter-spacing:2px}
+.panel .body{flex:1;overflow-y:auto;padding:0 26px 10px}
+.panel .foot{padding:16px 26px 22px;display:flex;gap:12px;justify-content:flex-end}
+.btn{padding:11px 24px;border-radius:11px;font-size:16px;background:rgba(255,255,255,.08);
+  border:1px solid var(--stroke);transition:all .15s}
+.btn:hover{background:rgba(125,140,255,.3)}
+.btn.pri{background:linear-gradient(135deg,var(--accent),var(--accent2));
+  border-color:transparent;color:#fff}
+.hist-item{padding:11px 0;border-bottom:1px solid rgba(255,255,255,.07);line-height:1.7}
+.hist-item .who{color:var(--accent2);font-weight:700;margin-right:10px}
+.hist-item.narration{color:var(--sub)}
+.slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.slot{padding:16px;border-radius:13px;text-align:left;background:rgba(255,255,255,.05);
+  border:1px solid var(--stroke);transition:all .15s;min-height:104px}
+.slot:hover{background:rgba(125,140,255,.22);transform:translateY(-2px)}
+.slot .n{font-size:14px;color:var(--accent2);letter-spacing:1px}
+.slot .t{font-size:13px;color:var(--sub);margin-top:8px;line-height:1.6}
+.slot .d{font-size:15px;margin-top:10px;line-height:1.6;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.slot.empty{opacity:.5}
+.field{display:flex;align-items:center;gap:16px;padding:14px 0}
+.field label{width:120px;font-size:16px;color:var(--sub)}
+.field input[type=range]{flex:1;accent-color:var(--accent)}
+.field .val{width:70px;text-align:right;font-size:15px;color:var(--sub)}
+.tip{padding:6px 0 14px;color:var(--sub);font-size:14px;line-height:1.8}
+
+#ending.on{display:grid;place-items:center;text-align:center}
+#ending .inner{position:relative;z-index:2}
+#ending h2{font-size:44px;letter-spacing:8px;margin-bottom:26px;
+  background:linear-gradient(120deg,#fff,#c9d2ff,#ffc3e2);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:9px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+<style>
+/* 项目自己的界面设置（来自 custom/gui.py）会注在这里 */
+__STMG_CUSTOM_CSS__
+</style>
+</head>
+<body>
+<div id="app">
+<div id="stage">
+
+  <div class="layer ph" id="l-bg"></div>
+  <div class="layer" id="l-pic"></div>
+  <div id="spr-layer"></div>
+
+  <div id="dialogue">
+    <div id="namebox"></div>
+    <div id="text"></div>
+    <div id="hint">▼</div>
+  </div>
+
+  <div id="ctrl">
+    <button id="c-auto">自动</button>
+    <button id="c-skip">快进</button>
+    <button id="c-hist">历史</button>
+    <button id="c-save">存档</button>
+    <button id="c-load">读档</button>
+    <button id="c-cfg">设置</button>
+    <button id="c-full">全屏</button>
+  </div>
+
+  <div class="ov on" id="title">
+    <div class="bg"></div>
+    <div class="inner">
+      <h1>__STMG_TITLE__</h1>
+      <div class="ver">__STMG_VER__ · __STMG_ENGINE_LABEL__</div>
+      <div class="menu">
+        <button id="t-start">开始游戏</button>
+        <button id="t-continue">继续游戏</button>
+        <button id="t-load">读取存档</button>
+        <button id="t-cfg">设置</button>
+      </div>
+    </div>
+    <div id="engine-state"></div>
+    <pre id="engine-error" style="display:none"></pre>
+  </div>
+
+  <div class="ov" id="choose">
+    <div class="mask"></div>
+    <div class="choices" id="choice-list"></div>
+  </div>
+
+  <div class="ov" id="ask">
+    <div class="mask"></div>
+    <div class="askcard">
+      <p id="ask-prompt"></p>
+      <div class="askrow">
+        <input id="ask-input" maxlength="40" autocomplete="off">
+        <button id="ask-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ov" id="history">
+    <div class="mask"></div>
+    <div class="panel">
+      <h2>历史记录</h2>
+      <div class="body" id="hist-body"></div>
+      <div class="foot"><button class="btn pri" data-close>关闭</button></div>
+    </div>
+  </div>
+
+  <div class="ov" id="slots">
+    <div class="mask"></div>
+    <div class="panel">
+      <h2 id="slots-title">存档</h2>
+      <div class="body"><div class="slots" id="slots-body"></div></div>
+      <div class="foot"><button class="btn" data-close>关闭</button></div>
+    </div>
+  </div>
+
+  <div class="ov" id="config">
+    <div class="mask"></div>
+    <div class="panel">
+      <h2>设置</h2>
+      <div class="body">
+        <div class="field"><label>文字速度</label>
+          <input type="range" id="s-speed" min="6" max="90" step="2">
+          <span class="val" id="v-speed"></span></div>
+        <div class="field"><label>BGM 音量</label>
+          <input type="range" id="s-bgm" min="0" max="100"><span class="val" id="v-bgm"></span></div>
+        <div class="field"><label>音效音量</label>
+          <input type="range" id="s-se" min="0" max="100"><span class="val" id="v-se"></span></div>
+        <div class="field"><label>语音音量</label>
+          <input type="range" id="s-voice" min="0" max="100"><span class="val" id="v-voice"></span></div>
+        <div class="field"><label>自动等待</label>
+          <input type="range" id="s-wait" min="600" max="4000" step="100">
+          <span class="val" id="v-wait"></span></div>
+        <div class="tip">快捷键：空格 / 回车 / 点击推进 · Ctrl 快进 · A 自动 · H 历史 · F11 全屏 · Esc 关面板</div>
+      </div>
+      <div class="foot">
+        <button class="btn" id="cfg-reset">清空存档数据</button>
+        <button class="btn pri" data-close>关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ov" id="ending">
+    <div class="mask"></div>
+    <div class="inner">
+      <h2>END</h2>
+      <div style="display:flex;gap:14px;justify-content:center">
+        <button class="btn pri" id="e-restart">再来一次</button>
+        <button class="btn" id="e-title">回到标题</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   STMG Web Player
+   剧本逻辑由引擎负责：默认用 Pyodide（WebAssembly 里的 CPython）
+   跑真正的 stmg Python 引擎；加载不了就自动退回页面内置解释器。
+   ============================================================ */
+const SCRIPT = __STMG_DATA__;
+const ASSETS = __STMG_ASSETS__;
+const GAME_KEY = __STMG_KEY__;
+
+const ENGINE_KIND = __STMG_ENGINE__;        // "wasm" | "js"
+const PYODIDE_URL = __STMG_PYODIDE__;       // Pyodide 的 indexURL
+const PY_SRC = __STMG_PY__;                 // {虚拟路径: 源码}
+const SCRIPT_TEXT = __STMG_SCRIPT__;        // 剧本原文（wasm 模式用）
+const OPTIONS_TEXT = __STMG_OPTIONS__;
+
+/* ---------- 小工具 ---------- */
+const $ = (id) => document.getElementById(id);
+
+function assetUrl(p){
+  if (!p) return "";
+  const k = String(p).replace(/\\/g, "/");
+  if (ASSETS && ASSETS[k]) return ASSETS[k];
+  return "assets/" + k;
+}
+function esc(s){
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+                  .replace(/"/g,"&quot;");
+}
+function hashHue(s){
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
+}
+function placeholder(el, label, path){
+  const h = hashHue(path || label);
+  el.style.background = "linear-gradient(135deg,hsl(" + h + ",45%,28%),hsl("
+    + ((h + 60) % 360) + ",50%,18%))";
+  el.classList.add("ph");
+  el.textContent = label + "\n" + (path || "");
+}
+function isStrLit(s){
+  s = String(s).trim();
+  return s.length >= 2 && s[0] === '"' && s[s.length-1] === '"' && s.slice(1,-1).indexOf('"') < 0;
+}
+function stripQuotes(s){
+  s = String(s).trim();
+  return (s.length >= 2 && s[0] === '"' && s[s.length-1] === '"') ? s.slice(1,-1) : s;
+}
+
+/* ---------- md 内联标记 → runs ---------- */
+const MD_RE = new RegExp([
+  "\\[color=(#[0-9a-fA-F]{3,8}|[A-Za-z]+)\\]([\\s\\S]*?)\\[/color\\]",
+  "\\[size=(\\d+)\\]([\\s\\S]*?)\\[/size\\]",
+  "\\{(?:ruby|注音):([^|]+)\\|([^}]+)\\}",
+  "\\*\\*([\\s\\S]+?)\\*\\*",
+  "~~([\\s\\S]+?)~~",
+  "`([^`]+)`",
+  "(?<!\\*)\\*([^*]+)\\*(?!\\*)"
+].join("|"), "g");
+
+function mdRuns(text){
+  const runs = [], s = String(text);
+  let pos = 0, m;
+  MD_RE.lastIndex = 0;
+  const push = (t, extra) => { if (t !== "" && t != null) runs.push(Object.assign({t:t}, extra)); };
+  while ((m = MD_RE.exec(s)) !== null){
+    if (m.index > pos) push(s.slice(pos, m.index), {});
+    pos = MD_RE.lastIndex;
+    if (m[1] != null) push(m[2], {color:m[1]});
+    else if (m[3] != null) push(m[4], {size:parseInt(m[3],10)});
+    else if (m[5] != null){ push(m[5], {}); push("(" + m[6] + ")", {size:11, color:"#8b93a8"}); }
+    else if (m[7] != null) push(m[7], {bold:true});
+    else if (m[8] != null) push(m[8], {strike:true});
+    else if (m[9] != null) push(m[9], {code:true});
+    else if (m[10] != null) push(m[10], {italic:true});
+  }
+  if (pos < s.length) push(s.slice(pos), {});
+  return runs;
+}
+function runsHTML(runs, limit){
+  let left = (limit == null ? Infinity : limit), out = "";
+  for (const r of runs){
+    if (left <= 0) break;
+    let t = r.t;
+    if (t.length > left){ t = t.slice(0, left); left = 0; } else left -= t.length;
+    let h = esc(t);
+    if (r.code) h = '<span class="code">' + h + "</span>";
+    const st = [];
+    if (r.bold) st.push("font-weight:700");
+    if (r.italic) st.push("font-style:italic");
+    if (r.strike) st.push("text-decoration:line-through");
+    if (r.color) st.push("color:" + r.color);
+    if (r.size) st.push("font-size:" + r.size + "px");
+    if (st.length) h = '<span style="' + st.join(";") + '">' + h + "</span>";
+    out += h;
+  }
+  return out;
+}
+function runsLen(runs){ return runs.reduce((a, r) => a + r.t.length, 0); }
+
+/* ============================================================
+   内置 JS 解释器（离线兜底 / --engine js 时使用）
+   ============================================================ */
+class Jump { constructor(i){ this.index = i; } }
+let SCOPE = {}, STM = {}, R = {}, CHOSEN = new Set(), LAST = null;
+let BODY = SCRIPT.body || [], ENDING = SCRIPT.ending || [], LABELS = {};
+let NAMES = [];
+const NAME_COLORS = ["#ff88bb","#7fb3ff","#6fd6a8","#ffc44d","#c79bff","#ff9d7a","#5fc9d6"];
+
+function resetState(){
+  STM = {Q:"", ANSWER:"", NAME:"", API:null, OS:""};
+  R = {RESULT:null};
+  SCOPE = {STM:STM, R:R}; CHOSEN = new Set(); LAST = null; NAMES = [];
+  LABELS = {};
+  BODY.forEach((s, i) => { if (s.k === "label") LABELS[s.name] = i; });
+}
+function assign(name, value){
+  if (String(name).toUpperCase().indexOf("STM.") === 0){ STM[String(name).split(".")[1]] = value; return; }
+  SCOPE[name] = value;
+}
+const FNCACHE = {};
+function toJS(expr){
+  return expr.replace(/\band\b/g, "&&").replace(/\bor\b/g, "||").replace(/\bnot\b/g, "!")
+    .replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false").replace(/\bNone\b/g, "null");
+}
+function evalExpr(expr){
+  expr = String(expr == null ? "" : expr).trim();
+  if (!expr) return "";
+  if (isStrLit(expr)) return expr.slice(1,-1);
+  if (/^-?\d+(\.\d+)?$/.test(expr))
+    return expr.indexOf(".") >= 0 ? parseFloat(expr) : parseInt(expr, 10);
+  const js = toJS(expr);
+  if (FNCACHE[js] === undefined){
+    try { FNCACHE[js] = new Function("__s", "with(__s){return (" + js + ");}"); }
+    catch (e) { FNCACHE[js] = null; }
+  }
+  if (!FNCACHE[js]) throw new Error("算不出来：" + expr);
+  return FNCACHE[js](SCOPE);
+}
+function sayText(raw){
+  raw = String(raw == null ? "" : raw).trim();
+  if (raw.indexOf("+") >= 0 || raw.indexOf("STM.") >= 0){
+    try { return String(evalExpr(raw)); } catch (e) { /* 当纯文本 */ }
+  }
+  return stripQuotes(raw);
+}
+function evalCond(cond){
+  cond = String(cond == null ? "" : cond).trim();
+  if (!cond) return true;
+  if (isStrLit(cond)) return CHOSEN.has(cond.slice(1,-1));
+  try { return !!evalExpr(cond); } catch (e) { return false; }
+}
+function spriteEvent(s){
+  const path = s.path || "", kw = s.kwargs || {}, args = s.args || [];
+  let tag = kw.tag || "";
+  if (!tag) tag = path.replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "");
+  const pos = String(kw.pos || (args.length > 1 ? args[1] : "center")).toLowerCase();
+  return {t:"sprite", path:path, tag:tag, pos:pos};
+}
+function* execBlock(stmts){ for (const s of stmts) yield* execStmt(s); }
+function* execStmt(s){
+  switch (s.k){
+    case "say": {
+      const who = s.who || null;
+      if (who && NAMES.indexOf(who) < 0) NAMES.push(who);
+      yield {t:"say", who:who, text:sayText(s.text)};
+      break;
+    }
+    case "define": if (s.name && NAMES.indexOf(s.name) < 0) NAMES.push(s.name); break;
+    case "label": break;
+    case "choose": {
+      const opts = (s.options || []).slice();
+      let a = yield {t:"choose", options:opts};
+      if (typeof a === "number") a = opts[a];
+      LAST = a; CHOSEN.add(a);
+      break;
+    }
+    case "if":
+      if (evalCond(s.cond)) yield* execBlock(s.body || []);
+      else if (s.else_body && s.else_body.length) yield* execBlock(s.else_body);
+      break;
+    case "else": break;
+    case "set": assign(s.name, evalExpr(s.expr)); break;
+    case "question": {
+      const p = s.prompt ? stripQuotes(s.prompt) : (STM.Q || "");
+      if (p) STM.Q = p;
+      const ans = yield {t:"question", prompt:STM.Q || "请输入"};
+      STM.ANSWER = ans; SCOPE.STM = STM;
+      break;
+    }
+    case "sprite": yield spriteEvent(s); break;
+    case "call": yield* doCall(s); break;
+    case "stm_os": yield* doStmOs(s); break;
+    default: break;
+  }
+}
+function* doCall(s){
+  const obj = String(s.obj || "").toUpperCase(), m = String(s.method || "").toLowerCase();
+  const args = s.args || [], kw = s.kwargs || {}, a0 = args.length ? args[0] : "";
+  if (obj === "S"){
+    if (m === "cg" || m === "bg" || m === "background") yield {t:"bg", path:a0};
+    else if (m === "picture") yield {t:"picture", path:a0};
+    else if (m === "play"){
+      const loop = String(kw.loop == null ? "true" : kw.loop).toLowerCase();
+      yield {t:"bgm", path:a0, loop: loop !== "false" && loop !== "0" && loop !== "no"};
+    }
+    else if (m === "sound") yield {t:"se", path:a0};
+    else if (m === "voice") yield {t:"voice", path:a0};
+    else if (m === "stop") yield {t:"stop", what:String(a0 || "bgm").toLowerCase()};
+    else if (m === "hide") yield {t:"hide", what:String(a0 || "sprite").toLowerCase()};
+    else if (m === "jump"){
+      if (LABELS[a0] != null) throw new Jump(LABELS[a0] + 1);
+      yield {t:"toast", text:'S.jump("' + a0 + '") 找不到这个标签'};
+    }
+    else if (m === "end") throw new Jump(BODY.length);
+    else yield {t:"toast", text:"S." + s.method + " 还没有对应实现"};
+  } else if (obj === "STM"){
+    yield {t:"toast", text: m === "display" ? a0 : "STM." + s.method + " 在网页版里没有实现"};
+  } else if (obj === "R"){
+    yield {t:"toast", text:"网页版不支持 R.api 联网请求"};
+  } else {
+    yield {t:"toast", text:"不认识的调用：" + s.method};
+  }
+}
+function* doStmOs(s){
+  if (s.op === "read"){ STM.OS = ""; SCOPE.STM = STM; }
+  yield {t:"noop"};
+}
+function* runAll(){
+  let i = 0;
+  while (true){
+    try { yield* execBlock(BODY.slice(i)); break; }
+    catch (e){
+      if (e instanceof Jump){ i = e.index; continue; }
+      console.error(e);
+      yield {t:"toast", text:"剧本跑出错了：" + e.message};
+      break;
+    }
+  }
+  if (ENDING.length) yield* execBlock(ENDING);
+  yield {t:"end"};
+}
+
+/* ============================================================
+   引擎封装：wasm（真 Python 引擎）/ js（内置解释器）
+   ============================================================ */
+class JsEngine {
+  constructor(){ resetState(); this.gen = runAll(); this.done = false; }
+  async next(ans){
+    if (this.done) return null;
+    const r = this.gen.next(ans);
+    if (r.done){ this.done = true; return null; }
+    return r.value;
+  }
+}
+
+class PyEngine {
+  constructor(mod){
+    this.mod = mod;
+    this.driver = mod.Driver(SCRIPT_TEXT, OPTIONS_TEXT);
+    this.done = false;
+  }
+  async next(ans){
+    if (this.done) return null;
+    let ev;
+    try { ev = JSON.parse(String(this.driver.next(ans === undefined ? null : ans))); }
+    catch (e){ console.error(e); this.done = true; return {t:"fatal", message:String(e)}; }
+    if (!ev || ev.t === "__done__"){ this.done = true; return null; }
+    return ev;
+  }
+}
+
+let PY_READY = null;         // Promise<Pyodide 模块>
+let PY_ERROR = "";           // 加载失败的原因（显示在标题界面上，方便排查）
+const BOOT_ERRORS = [];      // 引擎启动期间捕获的其它错误
+window.addEventListener("error", (e) => {
+  if (BOOT_ERRORS.length < 5) BOOT_ERRORS.push(String(e.message || e));
+});
+window.addEventListener("unhandledrejection", (e) => {
+  if (BOOT_ERRORS.length < 5) BOOT_ERRORS.push("Promise: " + String(e.reason));
+});
+function whyText(){
+  const extra = BOOT_ERRORS.length ? "；" + BOOT_ERRORS[0].slice(0, 90) : "";
+  return (PY_ERROR + extra).slice(0, 150);
+}
+/* 完整错误留在隐藏节点里，方便排查（也能被无头浏览器抓出来） */
+function dumpError(text){
+  PY_ERROR = text;
+  const el = $("engine-error");
+  if (el) el.textContent = String(text);
+  console.error("[STMG] " + text);
+}
+
+function loadScript(src){
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => res();
+    s.onerror = () => rej(new Error("加载失败：" + src));
+    document.head.appendChild(s);
+  });
+}
+async function bootPyodide(){
+  // 相对路径（比如本地打包进来的 pyodide/）先转成绝对，loader 内部拼路径更稳
+  const base = new URL(PYODIDE_URL, location.href).href;
+  const src = base + "pyodide.js";
+  if (!window.loadPyodide){
+    try { await loadScript(src); }
+    catch (e){ dumpError("loadScript " + src + " 失败：\n" + (e && e.message || e)); throw e; }
+  }
+  let py;
+  try { py = await loadPyodide({indexURL: base}); }
+  catch (e){ dumpError("loadPyodide 失败： " + (e && e.message || e)); throw e; }
+  try {
+    for (const p of Object.keys(PY_SRC)){
+      const dir = p.split("/").slice(0, -1).join("/");
+      if (dir) py.FS.mkdirTree(dir);
+      py.FS.writeFile(p, PY_SRC[p], {encoding: "utf8"});
+    }
+    py.runPython("import sys\nif '/stmg_root' not in sys.path: sys.path.insert(0, '/stmg_root')");
+    return py.pyimport("stmg.web_bridge");
+  } catch (e){
+    dumpError("引擎源码装载失败： " + (e && e.message || e));
+    throw e;
+  }
+}
+function engineLabel(){
+  if (ENGINE_KIND === "js") return "内置解释器";
+  return PY_FAILED ? "内置解释器（WASM 没加载上）" : "WebAssembly 引擎";
+}
+
+/* ---------- 自检：地址后面加 ?selftest=1 ----------
+   跑一遍引擎（不打开画面），把事件流打到标题界面底部。
+   用来确认网页版拿到的是不是真引擎吐出来的事件流。 */
+async function selfTest(){
+  const kinds = [];
+  try {
+    let eng, tag = "js";
+    if (ENGINE_KIND === "js" || !Object.keys(PY_SRC || {}).length){
+      eng = new JsEngine();
+    } else {
+      const mod = PY_READY ? await PY_READY : await bootPyodide();
+      eng = new PyEngine(mod);
+      tag = "wasm";
+    }
+    kinds.push("[" + tag + "]");
+    let pending;
+    for (let n = 0; n < 22; n++){
+      const ev = await eng.next(pending);
+      pending = undefined;
+      if (!ev){ kinds.push("done"); break; }
+      kinds.push(ev.t);
+      if (ev.t === "fatal" || ev.t === "end") break;
+      if (ev.t === "choose" && ev.options && ev.options.length) pending = ev.options[0];
+      else if (ev.t === "question") pending = "自检";
+    }
+  } catch (e){
+    kinds.push("ERR:" + String(e));
+  }
+  return kinds.join(" > ");
+}
+
+async function newEngine(){
+  if (ENGINE_KIND === "js" || !Object.keys(PY_SRC || {}).length) return new JsEngine();
+  try {
+    if (!PY_READY) PY_READY = bootPyodide();
+    const mod = await PY_READY;
+    return new PyEngine(mod);
+  } catch (e){
+    console.warn(e);
+    PY_FAILED = true;
+    const s = $("engine-state");
+    if (s) s.textContent = (location.protocol === "file:"
+      ? "本地双击打开的网页不允许加载 WebAssembly —— 用 http 服务打开，或者上传到网站就行"
+      : "WebAssembly 引擎没加载上，已切回内置解释器") + "｜原因：" + whyText();
+    toast("已切回内置解释器");
+    PY_READY = null;
+    return new JsEngine();
+  }
+}
+
+/* ---------- 播放器状态 ---------- */
+const stage = $("stage");
+const elBg = $("l-bg"), elPic = $("l-pic"), elSpr = $("spr-layer");
+const elDlg = $("dialogue"), elName = $("namebox"), elText = $("text"), elHint = $("hint");
+const elCtrl = $("ctrl");
+
+let ENGINE = null, MODE = "title", PY_FAILED = false, ENGINE_BUSY = false;
+let runs = [], shown = 0, typer = null, HISTORY = [], SAYN = 0;
+let REPLAY = null; const ANSWERS = [];
+let AUTO = false, SKIP = false, autoTimer = null;
+let sprites = {}, picOn = null;
+const CFG = {speed: 42, bgm: 70, se: 80, voice: 90, wait: 1400};
+
+function fit(){
+  const k = Math.min(window.innerWidth / SCRIPT.w, window.innerHeight / SCRIPT.h);
+  stage.style.transform = "scale(" + k + ")";
+}
+window.addEventListener("resize", fit);
+
+/* ---------- 设置 ---------- */
+function loadCfg(){
+  try { Object.assign(CFG, JSON.parse(localStorage.getItem(GAME_KEY + ":cfg") || "{}")); } catch (e) {}
+}
+function saveCfg(){
+  try { localStorage.setItem(GAME_KEY + ":cfg", JSON.stringify(CFG)); } catch (e) {}
+}
+function applyCfg(){
+  $("s-speed").value = CFG.speed; $("v-speed").textContent = CFG.speed + " 字/秒";
+  $("s-bgm").value = CFG.bgm; $("v-bgm").textContent = CFG.bgm + "%";
+  $("s-se").value = CFG.se; $("v-se").textContent = CFG.se + "%";
+  $("s-voice").value = CFG.voice; $("v-voice").textContent = CFG.voice + "%";
+  $("s-wait").value = CFG.wait; $("v-wait").textContent = (CFG.wait / 1000).toFixed(1) + " 秒";
+  if (AUDIO.bgm) AUDIO.bgm.volume = CFG.bgm / 100;
+  if (AUDIO.se) AUDIO.se.volume = CFG.se / 100;
+  if (AUDIO.voice) AUDIO.voice.volume = CFG.voice / 100;
+}
+
+/* ---------- 图层 ---------- */
+function setBg(path){
+  if (!path){
+    elBg.classList.remove("on"); elBg.style.backgroundImage = ""; elBg.className = "layer ph";
+    elPic.classList.remove("on"); elPic.style.backgroundImage = "";
+    clearSprites(); return;
+  }
+  const url = assetUrl(path);
+  elBg.className = "layer"; elBg.textContent = "";
+  const img = new Image();
+  img.onload = () => { elBg.style.backgroundImage = "url('" + url + "')"; elBg.classList.add("on"); };
+  img.onerror = () => {
+    elBg.style.backgroundImage = ""; placeholder(elBg, "背景缺失", path); elBg.classList.add("on");
+  };
+  img.src = url;
+  elPic.classList.remove("on"); elPic.style.backgroundImage = ""; picOn = null;
+  clearSprites();
+}
+function setPic(path){
+  if (!path){ elPic.classList.remove("on"); elPic.style.backgroundImage = ""; picOn = null; return; }
+  const url = assetUrl(path); picOn = path;
+  elPic.classList.remove("ph"); elPic.textContent = "";
+  const img = new Image();
+  img.onload = () => { elPic.style.backgroundImage = "url('" + url + "')"; elPic.classList.add("on"); };
+  img.onerror = () => {
+    elPic.style.backgroundImage = ""; placeholder(elPic, "贴图缺失", path); elPic.classList.add("on");
+  };
+  img.src = url;
+}
+function setSprite(path, tag, pos){
+  let el = sprites[tag];
+  if (!el){
+    el = document.createElement("div");
+    elSpr.appendChild(el);
+    sprites[tag] = el;
+  }
+  el.className = "spr " + (["left","center","right"].indexOf(pos) >= 0 ? pos : "center");
+  if (!path){ el.classList.remove("on"); return; }
+  const url = assetUrl(path);
+  const img = new Image();
+  img.onload = () => { el.style.backgroundImage = "url('" + url + "')"; el.classList.add("on"); };
+  img.onerror = () => {
+    el.style.backgroundImage = "linear-gradient(180deg,hsla(" + hashHue(path)
+      + ",45%,40%,.55),hsla(" + hashHue(path) + ",45%,18%,.85))";
+    el.classList.add("on");
+  };
+  img.src = url;
+}
+function clearSprites(){ for (const k in sprites) sprites[k].classList.remove("on"); }
+
+/* ---------- 音频 ---------- */
+const AUDIO = {bgm:null, se:null, voice:null};
+function playAudio(kind, path, loop){
+  if (!path){ if (AUDIO[kind]){ AUDIO[kind].pause(); AUDIO[kind] = null; } return; }
+  const url = assetUrl(path);
+  if (AUDIO[kind]) AUDIO[kind].pause();
+  const a = new Audio(url);
+  if (kind === "bgm") a.loop = loop !== false;
+  a.volume = (kind === "bgm" ? CFG.bgm : kind === "voice" ? CFG.voice : CFG.se) / 100;
+  a.play().catch(() => {});
+  AUDIO[kind] = a;
+}
+function stopAudio(what){
+  if (what === "bgm" || what === "music" || what === "all"){
+    if (AUDIO.bgm){ AUDIO.bgm.pause(); AUDIO.bgm = null; }
+  }
+  if (what === "sound" || what === "se" || what === "all"){
+    if (AUDIO.se){ AUDIO.se.pause(); AUDIO.se = null; }
+  }
+  if (what === "voice" || what === "all"){
+    if (AUDIO.voice){ AUDIO.voice.pause(); AUDIO.voice = null; }
+  }
+}
+
+/* ---------- 提示 ---------- */
+let toastEl = null;
+function toast(text){
+  if (!toastEl){
+    toastEl = document.createElement("div");
+    toastEl.style.cssText = "position:absolute;right:22px;top:22px;max-width:46%;z-index:30;"
+      + "padding:11px 18px;border-radius:11px;font-size:15px;color:#eef0f7;"
+      + "background:rgba(16,18,26,.9);border:1px solid rgba(255,255,255,.14);"
+      + "backdrop-filter:blur(10px);transition:opacity .3s;pointer-events:none";
+    stage.appendChild(toastEl);
+  }
+  toastEl.textContent = text;
+  toastEl.style.opacity = "1";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { toastEl.style.opacity = "0"; }, 2600);
+}
+
+/* ---------- 主循环 ---------- */
+async function pump(ans){
+  if (ENGINE_BUSY) return;
+  ENGINE_BUSY = true;
+  let guard = 0;
+  try {
+    while (true){
+      if (++guard > 500000){ break; }
+      const ev = await ENGINE.next(ans);
+      ans = undefined;
+      if (!ev || ev.t === "end"){ finish(); return; }
+      if (ev.t === "fatal"){ toast(ev.message || "剧本跑出错了"); finish(); return; }
+      if (ev.t === "say"){
+        SAYN++;
+        HISTORY.push({who:ev.who, text:ev.text});
+        if (REPLAY){
+          if (SAYN < REPLAY.says) continue;
+          REPLAY = null;
+        }
+        showSay(ev);
+        return;
+      }
+      if (ev.t === "choose"){
+        if (REPLAY && REPLAY.answers.length){ ans = REPLAY.answers.shift()[1]; continue; }
+        showChoose(ev);
+        return;
+      }
+      if (ev.t === "question"){
+        if (REPLAY && REPLAY.answers.length){ ans = REPLAY.answers.shift()[1]; continue; }
+        showAsk(ev);
+        return;
+      }
+      apply(ev);
+    }
+  } finally {
+    ENGINE_BUSY = false;
+  }
+}
+function apply(ev){
+  switch (ev.t){
+    case "bg": setBg(ev.path); break;
+    case "picture": setPic(ev.path); break;
+    case "sprite": setSprite(ev.path, ev.tag, ev.pos); break;
+    case "bgm": playAudio("bgm", ev.path, ev.loop); break;
+    case "se": playAudio("se", ev.path); break;
+    case "voice": playAudio("voice", ev.path); break;
+    case "stop": stopAudio(ev.what); break;
+    case "hide":
+      if (ev.what === "sprite") clearSprites();
+      else if (ev.what === "all"){ clearSprites(); setPic(""); }
+      else if (ev.what === "picture") setPic("");
+      else if (sprites[ev.what]) sprites[ev.what].classList.remove("on");
+      break;
+    case "toast": toast(ev.text); break;
+    default: break;
+  }
+}
+
+/* ---------- 演出 ---------- */
+function showSay(ev){
+  MODE = "play";
+  elDlg.classList.add("on");
+  elCtrl.classList.add("on");
+  elHint.classList.remove("on");
+  if (ev.who){
+    elName.textContent = ev.who;
+    const i = Math.max(0, NAME_COLORS.indexOf(ev.who));
+    elName.style.background = "linear-gradient(135deg," + NAME_COLORS[i % NAME_COLORS.length]
+      + ",rgba(255,255,255,.35))";
+    elName.classList.add("on");
+  } else {
+    elName.classList.remove("on");
+  }
+  runs = mdRuns(ev.text);
+  shown = 0;
+  typeStep();
+}
+function typeStep(){
+  clearTimeout(typer);
+  const total = runsLen(runs);
+  if (shown >= total){ onTyped(); return; }
+  shown = Math.min(total, shown + Math.max(1, Math.round(CFG.speed / 24)));
+  elText.innerHTML = runsHTML(runs, shown);
+  typer = setTimeout(typeStep, 1000 / 24);
+}
+function onTyped(){
+  elHint.classList.add("on");
+  if (AUTO || SKIP){
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => { if (AUTO || SKIP) advance(); }, SKIP ? 60 : CFG.wait);
+  }
+}
+function isTyping(){ return shown < runsLen(runs); }
+function advance(){
+  if (MODE !== "play" || ENGINE_BUSY) return;
+  if (isTyping()){ shown = runsLen(runs); elText.innerHTML = runsHTML(runs, shown); onTyped(); return; }
+  clearTimeout(autoTimer);
+  pump(undefined);
+}
+function showChoose(ev){
+  MODE = "choose";
+  const box = $("choice-list");
+  box.innerHTML = "";
+  ev.options.forEach((o) => {
+    const b = document.createElement("button");
+    b.innerHTML = runsHTML(mdRuns(o), null);
+    b.onclick = () => {
+      $("choose").classList.remove("on");
+      MODE = "play";
+      ANSWERS.push(["choose", o]);
+      pump(o);
+    };
+    box.appendChild(b);
+  });
+  $("choose").classList.add("on");
+}
+function showAsk(ev){
+  MODE = "ask";
+  $("ask-prompt").innerHTML = runsHTML(mdRuns(ev.prompt), null);
+  const inp = $("ask-input");
+  inp.value = "";
+  $("ask").classList.add("on");
+  setTimeout(() => inp.focus(), 60);
+}
+function submitAsk(){
+  const v = $("ask-input").value.trim();
+  if (!v) return;
+  $("ask").classList.remove("on");
+  MODE = "play";
+  ANSWERS.push(["question", v]);
+  pump(v);
+}
+function finish(){
+  MODE = "ending";
+  elDlg.classList.remove("on");
+  elHint.classList.remove("on");
+  elCtrl.classList.remove("on");
+  stopAudio("all");
+  $("ending").classList.add("on");
+}
+
+/* ---------- 开始 / 读档 ---------- */
+function clearStage(){
+  elText.innerHTML = "";
+  elName.classList.remove("on");
+  sprites = {}; elSpr.innerHTML = "";
+  elBg.style.backgroundImage = ""; elBg.className = "layer ph";
+  elPic.style.backgroundImage = ""; elPic.className = "layer";
+  HISTORY = []; SAYN = 0;
+  $("ending").classList.remove("on");
+  $("title").classList.remove("on");
+  elsHide();
+}
+async function newGame(){
+  clearStage();
+  answersReset();
+  elText.innerHTML = "正在准备引擎…";
+  elDlg.classList.add("on");
+  MODE = "play";
+  ENGINE = await newEngine();
+  elText.innerHTML = "";
+  REPLAY = null;
+  pump(undefined);
+}
+async function loadSave(slot){
+  const d = readSlot(slot);
+  if (!d) return;
+  clearStage();
+  answersReset();
+  elText.innerHTML = "正在读档…";
+  elDlg.classList.add("on");
+  MODE = "play";
+  ENGINE = await newEngine();
+  elText.innerHTML = "";
+  REPLAY = {answers: d.answers.slice(), says: d.says};
+  pump(undefined);
+}
+function answersReset(){ ANSWERS.length = 0; }
+
+/* ---------- 存档 ---------- */
+function slotKey(n){ return GAME_KEY + ":save:" + n; }
+function readSlot(n){
+  try { return JSON.parse(localStorage.getItem(slotKey(n)) || "null"); } catch (e) { return null; }
+}
+function writeSave(n){
+  const cur = HISTORY.length ? HISTORY[HISTORY.length-1] : {text:""};
+  try {
+    localStorage.setItem(slotKey(n), JSON.stringify({
+      answers: ANSWERS.slice(), says: SAYN, time: Date.now(),
+      snap: String(cur.text).slice(0, 60), who: cur.who || ""
+    }));
+  } catch (e) {}
+}
+function renderSlots(mode){
+  const box = $("slots-body");
+  box.innerHTML = "";
+  const list = mode === "save" ? [1,2,3,4,5,6] : [0,1,2,3,4,5,6];
+  list.forEach((i) => {
+    const d = readSlot(i);
+    const b = document.createElement("button");
+    b.className = "slot" + (d ? "" : " empty");
+    const title = i === 0 ? "自动存档" : "存档 " + i;
+    if (d){
+      b.innerHTML = '<div class="n">' + title + '</div><div class="t">'
+        + new Date(d.time).toLocaleString("zh-CN") + '</div><div class="d">'
+        + (d.who ? esc(d.who) + "：" : "") + esc(d.snap) + "</div>";
+    } else {
+      b.innerHTML = '<div class="n">' + title + '</div><div class="t">空</div><div class="d">—</div>';
+    }
+    b.onclick = () => {
+      if (mode === "save"){
+        if (MODE !== "play" && MODE !== "choose") return;
+        writeSave(i); renderSlots("save"); toast("已存档到 " + title);
+      } else {
+        if (!d){ toast(title + " 是空的"); return; }
+        loadSave(i);
+      }
+    };
+    box.appendChild(b);
+  });
+}
+function openSlots(mode){
+  $("slots-title").textContent = mode === "save" ? "存档" : "读档";
+  renderSlots(mode);
+  elsHide();
+  $("slots").classList.add("on");
+}
+function elsHide(){
+  ["history","slots","config","choose","ask"].forEach((k) => $(k).classList.remove("on"));
+}
+function openHistory(){
+  const box = $("hist-body");
+  box.innerHTML = HISTORY.map((h) =>
+    '<div class="hist-item' + (h.who ? "" : " narration") + '">'
+    + (h.who ? '<span class="who">' + esc(h.who) + "</span>" : "")
+    + runsHTML(mdRuns(h.text), null) + "</div>").join("");
+  elsHide();
+  $("history").classList.add("on");
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- 事件绑定 ---------- */
+elDlg.onclick = () => { if (MODE === "play") advance(); };
+stage.addEventListener("click", (e) => {
+  if (MODE === "play" && !e.target.closest("#ctrl") && !e.target.closest(".ov")
+      && !e.target.closest("#dialogue")) advance();
+});
+$("c-auto").onclick = (e) => {
+  AUTO = !AUTO; e.currentTarget.classList.toggle("act", AUTO);
+  if (AUTO){ SKIP = false; $("c-skip").classList.remove("act"); advance(); } else clearTimeout(autoTimer);
+};
+$("c-skip").onclick = (e) => {
+  SKIP = !SKIP; e.currentTarget.classList.toggle("act", SKIP);
+  if (SKIP){ AUTO = false; $("c-auto").classList.remove("act"); advance(); } else clearTimeout(autoTimer);
+};
+$("c-hist").onclick = openHistory;
+$("c-save").onclick = () => { elsHide(); openSlots("save"); };
+$("c-load").onclick = () => { elsHide(); openSlots("load"); };
+$("c-cfg").onclick = () => { elsHide(); applyCfg(); $("config").classList.add("on"); };
+$("c-full").onclick = toggleFull;
+$("t-start").onclick = () => { newGame(); };
+$("t-continue").onclick = () => { const d = readSlot(0); if (d) loadSave(0); else toast("还没有自动存档"); };
+$("t-load").onclick = () => { elsHide(); openSlots("load"); };
+$("t-cfg").onclick = () => { elsHide(); applyCfg(); $("config").classList.add("on"); };
+$("ask-ok").onclick = submitAsk;
+$("ask-input").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAsk(); });
+$("e-restart").onclick = () => { newGame(); };
+$("e-title").onclick = () => {
+  stopAudio("all"); elsHide(); $("ending").classList.remove("on");
+  MODE = "title"; $("title").classList.add("on");
+};
+document.querySelectorAll("[data-close]").forEach((b) => {
+  b.onclick = () => {
+    b.closest(".ov").classList.remove("on");
+    if (MODE === "play") elDlg.classList.add("on");
+  };
+});
+["speed","bgm","se","voice","wait"].forEach((k) => {
+  $("s-" + k).addEventListener("input", (e) => {
+    CFG[k] = parseInt(e.target.value, 10); applyCfg(); saveCfg();
+  });
+});
+$("cfg-reset").onclick = () => {
+  if (!confirm("清空这个游戏的所有存档和设置？")) return;
+  for (let i = 0; i <= 6; i++) localStorage.removeItem(slotKey(i));
+  localStorage.removeItem(GAME_KEY + ":cfg");
+  toast("已清空");
+};
+function toggleFull(){
+  if (!document.fullscreenElement){ if (stage.requestFullscreen) stage.requestFullscreen(); }
+  else document.exitFullscreen();
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "F11"){ e.preventDefault(); toggleFull(); return; }
+  if (MODE === "ask") return;
+  if (e.key === "Escape"){
+    const open = document.querySelector(".ov.on:not(#title):not(#ending)");
+    if (open){ elsHide(); if (MODE === "play") elDlg.classList.add("on"); }
+    else if (MODE === "play"){ elsHide(); applyCfg(); $("config").classList.add("on"); }
+    return;
+  }
+  if (MODE !== "play") return;
+  if (e.key === " " || e.key === "Enter"){ e.preventDefault(); advance(); }
+  else if (e.key === "a" || e.key === "A"){
+    AUTO = !AUTO; $("c-auto").classList.toggle("act", AUTO); if (AUTO) advance();
+  }
+  else if (e.key === "h" || e.key === "H") openHistory();
+  else if (e.key === "Control"){ SKIP = true; $("c-skip").classList.add("act"); advance(); }
+});
+document.addEventListener("keyup", (e) => {
+  if (e.key === "Control"){ SKIP = false; $("c-skip").classList.remove("act"); }
+});
+window.addEventListener("beforeunload", () => { if (MODE === "play") writeSave(0); });
+
+/* ---------- 启动 ---------- */
+loadCfg();
+applyCfg();
+fit();
+$("engine-state").textContent = ENGINE_KIND === "js"
+  ? "引擎：内置解释器（离线可用）"
+  : "引擎：WebAssembly 预热中…";
+if (ENGINE_KIND !== "js"){
+  // 后台预热，点「开始游戏」时就不用等了
+  (PY_READY = bootPyodide()).then(() => {
+    $("engine-state").textContent = "引擎：WebAssembly 就绪";
+  }).catch((e) => {
+    console.warn(e);
+    PY_FAILED = true; PY_READY = null;
+    $("engine-state").textContent = (location.protocol === "file:"
+      ? "本地双击打开时浏览器不让跑 WebAssembly，起个 http 服务就正常了"
+      : "WebAssembly 引擎没加载上，将使用内置解释器") + "｜原因：" + whyText();
+  });
+}
+
+/* 自检模式：地址后面加 ?selftest 就自动跑一段剧本，结果写进隐藏节点。
+   排错用的，正常玩不受影响。 */
+if (location.search.indexOf("selftest") >= 0){
+  (async () => {
+    const log = [];
+    let ans;
+    try {
+      const eng = await newEngine();
+      for (let i = 0; i < 16; i++){
+        const ev = await eng.next(ans);
+        ans = undefined;
+        if (!ev){ log.push("END"); break; }
+        log.push(ev.t + (ev.text ? "=" + String(ev.text).slice(0, 12) : ""));
+        if (ev.t === "choose") ans = ev.options[0];
+        if (ev.t === "question") ans = "测试";
+      }
+      log.push("engine=" + engineLabel());
+    } catch (e){
+      log.push("ERR=" + e);
+    }
+    const el = $("engine-error");
+    el.style.display = "block";
+    el.textContent = "SELFTEST " + log.join(" | ");
+    document.title = "SELFTEST DONE";
+  })();
+}
+/* 自检开关：地址后面加 ?selftest=1，跑一遍引擎把事件流打出来 */
+if (new URLSearchParams(location.search).has("selftest")){
+  selfTest().then(function (t){
+    $("engine-state").textContent = "自检 " + t;
+  }).catch(function (e){
+    $("engine-state").textContent = "自检失败：" + e;
+  });
+}
+
+</script>
+</body>
+</html>

@@ -228,15 +228,18 @@ def test_errscreen():
 def test_launcher():
     print("\n== 7. 启动器能起来 ==")
     try:
-        import tkinter as tk
         import launcher
-        r = tk.Tk()
-        r.withdraw()
-        app = launcher.Launcher(r)
+    except ImportError as e:
+        check("启动器能导入", False, "缺依赖：%s" % e)
+        return
+    try:
+        app = launcher.Launcher()          # CustomTkinter 自己建窗口
+        app.update_idletasks()
         check("主界面构建成功", app.listbox is not None)
         check("项目列表有内容", len(app.projects) >= 1, str(len(app.projects)))
-        r.update()
-        r.destroy()
+        check("界面配置已载入", isinstance(getattr(app, "cfg", None), dict))
+        app.update()
+        app.destroy()
     except Exception as e:                             # noqa: BLE001
         check("主界面构建成功", False, "%s: %s" % (type(e).__name__, e))
 

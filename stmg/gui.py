@@ -10,19 +10,15 @@ import os
 
 import pygame
 
-from . import render, save as savemod
+from . import render, save as savemod, uiconf
 from .audio import Audio
 from .errors import format_exception
 from .session import Session
 
 TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING = range(9)
 
-BOX_RATIO = 0.30          # 文本框占屏高的比例
-NAME_RATIO = 0.075
-
-# 立绘站位（横向中心点占屏宽的比例）
-SPRITE_X = {"left": 0.24, "center": 0.5, "right": 0.76,
-            "farleft": 0.13, "farright": 0.87}
+# 界面尺寸、颜色、位置全在 uiconf.DEFAULTS 里，
+# 项目目录下的 custom/gui.py 可以覆盖任意一项——别在这里写死数值。
 
 
 class Settings(object):
@@ -68,6 +64,8 @@ class App(object):
         self.root = os.path.dirname(os.path.abspath(script.path))
         self.W, self.H = script.size
         self.settings = Settings(self.root)
+        # 项目自定义界面：custom/gui.py（外观）+ custom/markdown.py（内联标记）
+        self.ui, self.ui_error = uiconf.setup(self.root)
 
         self._open_window()
         self.base = pygame.Surface((self.W, self.H)).convert()
@@ -101,6 +99,13 @@ class App(object):
         self.pending_toasts = []
         self.running = True
 
+        # 项目自定义界面出问题的话，开发模式下提示一句（不影响游戏）
+        if self.ui_error and self.dev_mode:
+            self.pending_toasts.append("界面配置：" + self.ui_error)
+
+        # 标题界面的 BGM（项目 custom/gui.py 里配的 title_bgm）
+        self._title_bgm_on()
+
         # 有解析错误：直接进错误界面，窗口照开，但不进标题 / 游戏
         if self.script_errors:
             self.state = ERROR
@@ -132,6 +137,33 @@ class App(object):
     def asset(self, *parts):
         p = os.path.join(self.root, "gui", *parts)
         return p if os.path.isfile(p) else ""
+
+    def ui_path(self, name):
+        """custom/gui.py 里写的资源路径 → 绝对路径（不存在就返回空串）。"""
+        if not name:
+            return ""
+        p = str(name).replace("\\", "/")
+        if os.path.isabs(p):
+            return p if os.path.isfile(p) else ""
+        full = os.path.join(self.root, p)
+        return full if os.path.isfile(full) else ""
+
+    def _title_bgm_on(self):
+        path = self.ui_path(self.ui.get("title_bgm"))
+        if not path:
+            return
+        self.audio.set_volume("bgm", self.ui.get("title_bgm_volume",
+                                                 self.settings.vol["bgm"]))
+        self.audio.apply({"t": "bgm", "path": path, "loop": True})
+
+    def box_rect(self):
+        """对话框矩形——位置和大小由项目里的 custom/gui.py 决定。"""
+        u = self.ui
+        h = int(self.H * u["box_h"])
+        w = int(self.W * u["box_w"])
+        x = int(self.W * u["box_x"])
+        y = self.H - h - int(self.H * u["box_y"])
+        return pygame.Rect(x, y, w, h)
 
     def apply_effects(self):
         for ev in self.session.effects:
@@ -362,6 +394,11 @@ class App(object):
         return out
 
     def start_game(self):
+        # 标题曲到此为止，音量还给玩家设置
+        if self.ui.get("title_bgm"):
+            self.audio.apply({"t": "stop", "what": "bgm"})
+            for k, v in self.settings.vol.items():
+                self.audio.set_volume(k, v)
         self.session.reset()
         self.apply_effects()
         self.reveal = 0.0
@@ -376,7 +413,8 @@ class App(object):
     def choice_rects(self):
         opts = self.session.block.get("options", []) if self.session.block else []
         n = len(opts)
-        w, h, gap = int(self.W * 0.52), 54, 16
+        u = self.ui
+        w, h, gap = int(self.W * u["choice_w"]), u["choice_h"], u["choice_gap"]
         x = (self.W - w) // 2
         y0 = self.H // 2 - (n * (h + gap)) // 2
         return [pygame.Rect(x, y0 + i * (h + gap), w, h) for i in range(n)]
@@ -401,7 +439,8 @@ class App(object):
             elif self.state == SAVELOAD:
                 self.draw_saveload()
 
-        render.draw_toasts(self.base, self.fonts, self.pending_toasts[-4:], self.W)
+        render.draw_toasts(self.base, self.fonts, self.pending_toasts[-4:], self.W,
+                           size=self.ui["toast_size"])
         if self.scale != 1.0:
             pygame.transform.smoothscale(self.base, self.screen.get_size(), self.screen)
         else:
@@ -409,24 +448,38 @@ class App(object):
 
     # ------------------------------------------------------------------ #
     def draw_title(self):
-        self.base.fill((24, 26, 40))
-        for i in range(self.H):
-            k = i / float(self.H)
-            c = (int(30 + 40 * k), int(32 + 30 * k), int(56 + 50 * k))
-            pygame.draw.line(self.base, c, (0, i), (self.W, i))
-        banner = self.asset("button", "title.png")
+        u = self.ui
+        # 标题背景：配了图就用图，没配就用渐变（两个端点色也能改）
+        bg = render.load_image(self.ui_path(u["title_bg"]))
+        if bg:
+            bg = render.fit_into(bg, self.W, self.H)
+            self.base.fill((16, 16, 22))
+            self.base.blit(bg, ((self.W - bg.get_width()) // 2,
+                                (self.H - bg.get_height()) // 2))
+        else:
+            top, bottom = u["title_top"], u["title_bottom"]
+            for i in range(self.H):
+                k = i / float(self.H)
+                c = tuple(int(top[j] + (bottom[j] - top[j]) * k) for j in range(3))
+                pygame.draw.line(self.base, c, (0, i), (self.W, i))
+
+        banner = self.ui_path(u["title_pic"]) or self.asset("button", "title.png")
         pic = render.load_image(banner)
         if pic:
             pic = render.fit_into(pic, int(self.W * 0.7), int(self.H * 0.3))
-            self.base.blit(pic, ((self.W - pic.get_width()) // 2, int(self.H * 0.14)))
+            self.base.blit(pic, ((self.W - pic.get_width()) // 2,
+                                 int(self.H * u["title_y"])))
         else:
-            f = self.fonts.get(int(self.H * 0.075), bold=True)
+            f = self.fonts.get(int(self.H * u["title_size"]), bold=True)
             t = f.render(self.script.title, True, (255, 255, 255))
-            self.base.blit(t, ((self.W - t.get_width()) // 2, int(self.H * 0.18)))
+            self.base.blit(t, ((self.W - t.get_width()) // 2,
+                               int(self.H * u["title_y"])))
             f2 = self.fonts.get(18)
-            sub = f2.render("STMG v%s   |   按 Esc 打开菜单" % self.script.header.get("ver", "1.0.0"),
+            sub = f2.render("STMG v%s   |   按 Esc 打开菜单"
+                            % self.script.header.get("ver", "1.0.0"),
                             True, (200, 205, 225))
-            self.base.blit(sub, ((self.W - sub.get_width()) // 2, int(self.H * 0.30)))
+            self.base.blit(sub, ((self.W - sub.get_width()) // 2,
+                                 int(self.H * (u["title_y"] + 0.12))))
 
         self.buttons = self.title_buttons()
         self.draw_buttons(22)
@@ -446,24 +499,29 @@ class App(object):
         if pic:
             img = render.load_image(pic)
             if img:
-                img = render.fit_into(img, int(self.W * 0.6), int(self.H * 0.6))
+                img = render.fit_into(img, int(self.W * self.ui["pic_w"]),
+                                      int(self.H * self.ui["pic_h"]))
                 self.base.blit(img, ((self.W - img.get_width()) // 2,
-                                     int(self.H * 0.5 - img.get_height())))
+                                     int(self.H * self.ui["pic_center_y"])
+                                     - img.get_height()))
             else:
-                r = pygame.Rect(int(self.W * 0.2), int(self.H * 0.1),
-                                int(self.W * 0.6), int(self.H * 0.5))
+                r = pygame.Rect(int(self.W * (0.5 - self.ui["pic_w"] / 2.0)),
+                                int(self.H * 0.1), int(self.W * self.ui["pic_w"]),
+                                int(self.H * (self.ui["pic_h"] - 0.1)))
                 render.draw_placeholder(self.base, r, pic, 2)
 
         # 立绘：tag -> {path, pos}，可以同时站好几张，按 tag 排序保证叠放稳定
         sprites = self.session.scene.get("sprites") or {}
+        u = self.ui
         for i, tag in enumerate(sorted(sprites)):
             item = sprites[tag]
             path = item.get("path", "")
-            cx = int(self.W * SPRITE_X.get(item.get("pos", "center"), 0.5))
-            bottom = int(self.H * 0.78)
+            cx = int(self.W * u["sprite_x"].get(item.get("pos", "center"), 0.5))
+            bottom = int(self.H * u["sprite_bottom"])
             img = render.load_image(path)
             if img:
-                img = render.fit_into(img, int(self.W * 0.42), int(self.H * 0.76))
+                img = render.fit_into(img, int(self.W * u["sprite_w"]),
+                                      int(self.H * u["sprite_h"]))
                 self.base.blit(img, (cx - img.get_width() // 2,
                                      bottom - img.get_height()))
             else:
@@ -474,37 +532,41 @@ class App(object):
         self.draw_textbox()
 
     def draw_textbox(self):
-        box_h = int(self.H * BOX_RATIO)
-        box = pygame.Rect(int(self.W * 0.05), self.H - box_h - int(self.H * 0.03),
-                          int(self.W * 0.9), box_h)
+        u = self.ui
+        box = self.box_rect()
         img = render.load_image(self.asset("textbox", "box.png"), box.size)
         if img:
             self.base.blit(img, box)
         else:
             panel = pygame.Surface(box.size, pygame.SRCALPHA)
-            panel.fill((252, 252, 255, 232))
+            c = u["box_color"]
+            panel.fill((c[0], c[1], c[2], u["box_alpha"]))
             self.base.blit(panel, box)
-            pygame.draw.rect(self.base, (150, 152, 175), box, 2, border_radius=10)
+            if u["box_border"]:
+                pygame.draw.rect(self.base, u["box_border_color"], box,
+                                 u["box_border"], border_radius=u["box_radius"])
 
         who = self.session.speaker
         text = self.session.text
-        pad = 26
+        pad = u["text_pad"]
         y = box.y + pad
         if who:
-            f = self.fonts.get(22, bold=True)
-            t = f.render(who, True, (255, 255, 255))
-            nr = pygame.Rect(box.x + pad, box.y - int(self.H * NAME_RATIO) + 12,
-                             t.get_width() + 34, int(self.H * NAME_RATIO) - 6)
-            pygame.draw.rect(self.base, (72, 96, 140), nr, border_radius=8)
+            f = self.fonts.get(u["name_size"], bold=True)
+            t = f.render(who, True, u["name_color"])
+            nh = int(self.H * u["name_h"])
+            nr = pygame.Rect(box.x + pad, box.y - nh + 12,
+                             t.get_width() + 34, nh - 6)
+            pygame.draw.rect(self.base, u["name_bg"], nr, border_radius=8)
             self.base.blit(t, (nr.x + 17, nr.centery - t.get_height() // 2))
             y = box.y + pad
 
         runs = render.md(text)
         lines, line_h = render.layout(runs, self.fonts,
-                                      box.width - pad * 2, base_size=23)
+                                      box.width - pad * 2,
+                                      base_size=u["text_size"])
         shown = render.reveal(lines, int(self.reveal))
         render.draw_lines(self.base, shown, self.fonts, box.x + pad, y,
-                          line_h, base_size=23)
+                          line_h, base_size=u["text_size"])
 
     def draw_choices(self):
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
@@ -517,7 +579,7 @@ class App(object):
             bg = (255, 255, 255) if hover else (238, 240, 250)
             pygame.draw.rect(self.base, bg, r, border_radius=10)
             pygame.draw.rect(self.base, (90, 110, 160), r, 2, border_radius=10)
-            f = self.fonts.get(22)
+            f = self.fonts.get(self.ui["choice_size"])
             label = opts[i] if i < len(opts) else "?"
             t = f.render(label, True, (35, 40, 60))
             self.base.blit(t, (r.centerx - t.get_width() // 2,
@@ -525,13 +587,15 @@ class App(object):
 
     def draw_question(self):
         blk = self.session.block
-        box = pygame.Rect(int(self.W * 0.2), int(self.H * 0.52),
-                          int(self.W * 0.6), int(self.H * 0.2))
+        u = self.ui
+        box = pygame.Rect(int(self.W * u["ask_x"]), int(self.H * u["ask_y"]),
+                          int(self.W * u["ask_w"]), int(self.H * u["ask_h"]))
         panel = pygame.Surface(box.size, pygame.SRCALPHA)
         panel.fill((255, 255, 255, 240))
         self.base.blit(panel, box)
-        pygame.draw.rect(self.base, (150, 152, 175), box, 2, border_radius=10)
-        f = self.fonts.get(20)
+        pygame.draw.rect(self.base, (150, 152, 175), box, u["box_border"],
+                         border_radius=u["box_radius"])
+        f = self.fonts.get(u["ask_size"])
         p = f.render(blk.get("prompt", ""), True, (60, 60, 80))
         self.base.blit(p, (box.x + 18, box.y + 14))
         field = pygame.Rect(box.x + 18, box.y + 52, box.width - 36, 44)

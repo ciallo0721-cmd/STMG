@@ -433,7 +433,7 @@ class Launcher(ctk.CTk):
             return
         p = proj.script_of(self.current["path"])
         # 不在按钮回调里同步建窗口：挪到 after 里，卡死/报错都能定位
-        self.log_line("可视化编辑：准备打开 %s" % p)
+        self.log_line("可视化编辑：准备打开 %s（build 20260913-1801）" % p)
         self.after(10, self._open_visual_editor, p)
 
     def _open_visual_editor(self, p):

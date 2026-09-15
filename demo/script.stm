@@ -76,6 +76,20 @@ If "先睡一觉":
     R.api(url="api.example.com/ping", key=option)
     "（上面这条是 R.api 的用法示范）"
 
+<-- python 代码块：先用 stmg.python("库名") 声明要用哪些库（不用库就写 none），
+     代码写在下面；print 出来的每一行依次飘到右上角。
+     python: 后面写个数字 = 每行隔几秒，不写就是默认 3 秒 -->
+stmg.python("math")
+<
+python: 1
+total = sum(range(1, 11))
+print("1 加到 10 是 %d" % total)
+print("math.sqrt(2) = %.4f" % math.sqrt(2))
+>
+
+<-- 代码里算出来的 total 会自动带回剧本，台词里直接引用就行 -->
+"python 算出来的 total 也能用在台词里：[color=#ff88bb]**" + str(total) + "**[/color]。"
+
 S.stop("all")
 S.cg("")
 S.hide("all")

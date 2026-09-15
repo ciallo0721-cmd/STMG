@@ -1,0 +1,37 @@
+/* ==========================================================================
+   网页版样式 —— 这份 CSS 会被内联进发布出来的 index.html 末尾，
+   排在引擎自带样式**后面**，所以同名选择器直接覆盖就行，不用加 !important。
+
+   常用选择器（都是发布页里的真实 id / class）：
+
+     #stage            整个游戏画面（固定宽高，等比缩放）
+     #l-bg   #l-pic    背景层 / S.picture 叠加层
+     #spr-layer .spr   立绘层 / 每个立绘（.spr.left .spr.center .spr.right）
+     #dialogue         对话框
+     #namebox          名字框
+     #text             台词
+     #hint             右下角的“继续”小箭头
+     #ctrl button      自动 / 快进 / 历史 / 存档 / 读档 / 设置 / 全屏
+     #title            标题画面（.ov = 各种全屏浮层）
+     #choice-list button   选择支按钮
+
+   可用变量（引擎已经定义好，直接引用即可）：
+
+     --accent  --accent2  主题色（名字框渐变用的就是它们）
+     --ink  --sub         主文字色 / 次要文字色
+     --panel  --stroke    面板底色 / 描边色
+     --radius             圆角
+
+   图片要用 url() 的话，写相对美化包自己的路径就行，例如：
+       #dialogue{background:url("gui/box.png") center/100% 100% no-repeat}
+   发布时会自动把这些图拷出来并改好路径。
+   远程地址（http://…）和内联 @import 是禁止的 —— 美化包必须自带全部素材。
+   ========================================================================== */
+
+/* 例子：把名字框换成圆角更少的样式
+#namebox{border-radius:6px;letter-spacing:2px}
+*/
+
+/* 例子：对话框再透一点
+#dialogue{background:linear-gradient(180deg,rgba(12,14,22,.72),rgba(12,14,22,.86))}
+*/

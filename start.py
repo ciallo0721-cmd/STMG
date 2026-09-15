@@ -8,6 +8,8 @@
   python start.py --auto 剧本          无头跑一遍（自动选第一个选项），打印全部台词
   python start.py --auto=2 剧本        自动选第三个选项
   python start.py --release 剧本       用发布版规则跑（禁 STM.python、关联网）
+  python start.py --mod 美化包名 剧本   这次用指定的美化包（mod/<名字>/）
+  python start.py --no-mod 剧本        这次不用任何美化包
   python start.py 剧本.stmdec --key 口令   跑加密剧本
 
 改完剧本用 --check 先过一遍，再开窗口看效果。
@@ -78,6 +80,9 @@ def summarize(sc, stmts=None, depth=0):
                                          ", ".join(list(s["args"]) + extra)))
         elif k == "label":
             print("%s%-10s %s" % (pad, "label", s["name"]))
+        elif k == "pycode":
+            print("%s%-10s %d 行代码，每行隔 %s 秒"
+                  % (pad, "python", len(s.get("code") or []), s.get("delay")))
 
 
 def run_auto(script, options, pick=0, dev_mode=True):
@@ -106,6 +111,10 @@ def run_auto(script, options, pick=0, dev_mode=True):
             # 转场只是画面演出，无头模式下不停留，直接继续推进
             sess.next_block()
             continue
+        elif t == "wait":
+            # python 代码块逐行提示之间的间隔：无头模式下没必要真等，直接往下
+            sess.next_block()
+            continue
         elif t == "fatal":
             print("\n!! 运行出错：" + blk.get("message", ""))
             if blk.get("trace"):
@@ -127,6 +136,8 @@ def main(argv):
     pick = 0
     dev_mode = True
     path = None
+    mod_id = None
+    no_mod = False
 
     i = 0
     while i < len(args):
@@ -139,6 +150,11 @@ def main(argv):
             mode, pick = "auto", int(a.split("=", 1)[1])
         elif a == "--release":
             dev_mode = False
+        elif a == "--mod":
+            i += 1
+            mod_id = args[i]
+        elif a == "--no-mod":
+            no_mod = True
         elif a == "--key":
             i += 1
             key = args[i]
@@ -163,26 +179,41 @@ def main(argv):
 
     options = optmod.load_options(optmod.find_options(path), key)
 
+    def mod_line():
+        """当前用的是哪个美化包（命令行模式下顺便报一下）。"""
+        from stmg import mod as modmod
+        root = os.path.dirname(path)
+        t = modmod.load_theme(root, mod_id, disabled=no_mod)
+        if not t["ok"]:
+            print("美化包　：%s" % t["reason"])
+        elif t["id"] == modmod.DEFAULT_ID:
+            print("美化包　：不使用（mod/active.json 里是 none）")
+        else:
+            print("美化包　：%s（%s）" % (t["meta"].get("name") or t["id"], t["id"]))
+
     if mode == "check":
         print("剧本：%s" % path)
         print("标题：%s   分辨率：%dx%d   字体：%s"
               % (script.title, script.width, script.height, script.font))
+        mod_line()
         print("-" * 60)
         summarize(script)
         print("-" * 60)
         return print_issues(script)
 
     if mode == "auto":
+        mod_line()
         return run_auto(script, options, pick, dev_mode)
 
     if script.error_count():
         # 像 Ren'Py 一样：不在命令行里报错，而是开游戏窗口显示错误界面
         from stmg.gui import App
-        App(script, options, dev_mode, script_errors=script.issues).run()
+        App(script, options, dev_mode, script_errors=script.issues,
+            mod_id=mod_id, no_mod=no_mod).run()
         return 1
 
     from stmg.gui import App
-    App(script, options, dev_mode).run()
+    App(script, options, dev_mode, mod_id=mod_id, no_mod=no_mod).run()
     return 0
 
 

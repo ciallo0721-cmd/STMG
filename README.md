@@ -45,6 +45,10 @@ Question:
 
 缩进就是分支，`**粗体**` 直接写在台词里，选择支和条件判断各占一行。
 
+头部那个 `< >` 是可选的：整份剧本只写一个 `< >` 把剧情全包进去也能跑
+（引擎靠「有没有标签行」分辨头和正文，头部里只有 `名称=值`，不会撞车）。
+`Start:` 不分大小写，写成 `start:` 一样认。
+
 ---
 
 ## 目录
@@ -56,6 +60,8 @@ Question:
 - [游戏内错误界面](#游戏内错误界面解析错误不进命令行)
 - [项目结构](#项目结构)
 - [命令行工具](#命令行工具)
+- [自定义界面与引擎](#自定义界面与引擎)
+- [美化包（mod）](#美化包mod换主题)
 - [打包发布](#打包发布)
 - [关于加密](#关于加密重要)
 - [已知限制](#已知限制)
@@ -72,6 +78,7 @@ Question:
 - **三通道音频** —— BGM / 音效 / 语音各自独立音量，音效不会打断 BGM
 - **md 内联渲染** —— 加粗、斜体、删除线、颜色、字号、注音，文本框里直接生效
 - **完整 galgame 体验件** —— 存档读档、历史回顾、自动播放、快进、打字机、设置界面
+- **剧本里能嵌 Python** —— `<python: ... >` 跑一段代码，`print` 的内容逐行飘到右上角
 - **带语法检查器** —— `--check` 逐行报错，五级错误分级，写错了不用开着窗口试
 - **加密发布** —— 一键把剧本和素材打包成 `.stmdec`，纯标准库实现，零额外依赖
 - **缺素材不崩** —— 图还没画好也能跑，引擎会自动画占位块
@@ -79,6 +86,7 @@ Question:
 - **发布成网页** —— 一键生成能直接玩、能分享的 HTML，逻辑跑的是**真引擎**（WebAssembly，不是重写一遍）
 - **能转 Ren'Py** —— 剧本可以反向导出成 `.rpy`，想换引擎不用重写
 - **界面可自定义** —— 项目里的 `custom/gui.py` 随便改：对话框位置、名字框颜色、标题图、标题曲
+- **能换主题** —— `mod/` 下放美化包（`gui.py` + `theme.css` + `theme.js`），换个外观不改引擎，还能单独打包成「美化包」分享
 
 ---
 
@@ -144,6 +152,8 @@ start.bat projects\我的游戏\script.stm
 .venv\Scripts\python.exe start.py --check demo\script.stm    :: 只检查语法
 .venv\Scripts\python.exe start.py --auto  demo\script.stm    :: 无头跑一遍
 .venv\Scripts\python.exe start.py --auto=1 demo\script.stm   :: 自动选第二个选项
+.venv\Scripts\python.exe start.py demo\script.stm --mod example_sakura
+.venv\Scripts\python.exe start.py demo\script.stm --no-mod   :: 这次不用美化包
 ```
 
 ### 操作
@@ -183,6 +193,8 @@ start.bat projects\我的游戏\script.stm
 | `S.jump("标签名")` / `S.end()` | 跳转 / 直接结束 |
 | `SET 变量 = 值` | 赋值 |
 | `STM.display("文字")` | 右上角弹一条提示 |
+| `stmg.python("math")` | 声明 python 代码块能用的库（`"none"` = 不用库） |
+| `<python: 代码 >` | 内嵌一段 Python，`print` 的内容逐行飘到右上角（开发模式专属） |
 | `R.api(url="...", key=option)` | 发 HTTP 请求，结果在 `STM.API` |
 | `stm.os(read("C:/a.txt"))` | 读文件，内容进 `STM.OS`（静默，不弹提示） |
 | `stm.os(create("C:/a.txt"))` | 建空文件（已存在则不动） |
@@ -376,6 +388,57 @@ stm.os(read("C:/path/to/name.txt"))
 
 ---
 
+## python 代码块 —— 剧本里跑段代码（开发模式专属）
+
+写剧本时想算点东西、或者打点调试信息，可以直接嵌一段 Python：
+
+```stm
+<
+Start:
+"example"
+stmg.python("math")   <-- 这个块要用哪些库；不需要库就写 stmg.python("none")
+<
+python: 1             <-- 冒号后面的数字 = 每行 print 之间隔几秒（不写就是 3 秒）
+print("1")
+print("2")
+total = sum(range(1, 11))
+print("1 加到 10 是 %d" % total)
+>"算出来的 total 能直接用在台词里：" + str(total)
+>
+```
+
+跑起来是这样的：`1` 先出现在**右上角**，1 秒后 `2`，再 1 秒后最后一行；
+提示飘完，剧情接着往下走（等的时候点一下可以直接跳过）。
+
+| 写法 | 意思 |
+|---|---|
+| `stmg.python("math")` | 声明代码块能用的库，多个可以用逗号：`stmg.python("math,random")` |
+| `stmg.python("none")` | 明确表示不需要额外库（这两行其实也可以全省略） |
+| `<` 换行 `python:` | 代码块开口；开口和关键词分两行写也认 |
+| `<python: 2` | 开口和关键词写成一行，冒号后面是每行之间的秒数 |
+| 单独一行 `>` | 收尾 |
+
+- 声明过的库直接按名字用（`math.sqrt(2)`），也能在块里 `import math`；
+  但只有**白名单**里的库放得进来，名单和 `STM.python` 是同一份
+  （`math / random / time / datetime / json / re / itertools / collections ...`）
+- 代码里算出来的变量**自动带回剧本**，后面 `"..." + str(total)` 直接引用，不用再 `SET`
+- 块里语法出错会停在游戏内的错误界面，并告诉你出错的是**剧本第几行**
+- 一次最多飘 30 行，多出来的会提示「还有 N 行没有显示出来」
+- 间隔只加在**行与行之间**：最后一行显示完就往下走；想让它多停一会儿，
+  就在块后面写一句台词（台词本来就等玩家点）
+
+> ⚠️ **开发模式专属**。立场和 `STM.python` 完全一致：发布版会**整块跳过**，
+> 并在右上角说明一句。所以**别让剧情逻辑依赖它算出来的变量**——
+> 面向玩家的正式功能请用 `SET` / `S.*` / `stm.os`。
+> 想知道为什么：剧本里的代码是直接 `exec` 的，放进玩家机器上跑没有任何好处，只有风险。
+
+网页版：默认的 WebAssembly 引擎跑的就是这份 Python 代码，代码块照常工作；
+只有退回「页面内置解释器」时才跳过并提示。
+
+想看实际效果，跑 `demo/script.stm` 最后那段就行。
+
+---
+
 ## 游戏内错误界面（解析错误不进命令行）
 
 剧本有语法错误时，引擎**不会**在命令行里刷一堆报错再退出，而是**照常开游戏窗口**，在游戏里显示一张错误界面（和 Ren'Py 的 `An error has occurred.` 一个意思）：
@@ -403,16 +466,18 @@ STMG/
 │   ├── runtime.py           语句树 → 事件流
 │   ├── session.py           推进器：当前显示什么 / 存读档
 │   ├── gui.py               pygame 主界面（外观由 uiconf 驱动）
-│   ├── uiconf.py            界面配置：默认值 + 读项目里的 custom/gui.py
+│   ├── uiconf.py            界面配置：默认值 + 美化包 + 项目里的 custom/gui.py
+│   ├── mod.py               美化包：加载、清单、**静态校验**（只改外观，不碰引擎）
 │   ├── render.py            排版、文本框、立绘布局
 │   ├── audio.py             BGM / 音效 / 语音
 │   ├── markdown.py          内联标记 → 样式片段
 │   ├── web_bridge.py        网页版桥：在 Pyodide 里跑这个真引擎
 │   ├── webplayer.html       网页播放器模板（发布 HTML 用它渲染）
 │   ├── pyodide/             WebAssembly 版 CPython 本体（tools/get_pyodide.py 下的，约 13MB）
-│   ├── templates/           新建项目时拷过去的两份自定义文件
+│   ├── templates/           新建项目时拷过去的自定义文件
 │   │   ├── custom_gui.py        界面配置模板
-│   │   └── custom_markdown.py   自定义标记模板
+│   │   ├── custom_markdown.py   自定义标记模板
+│   │   └── mod_*.py/css/js      美化包骨架模板（tools/modcheck.py --new 用它）
 │   ├── options.py           options.stm 解析
 │   ├── save.py              存档槽
 │   ├── crypto.py            .stmdec 加解密
@@ -428,7 +493,10 @@ STMG/
 │   ├── renpy2stm.py         Ren'Py 工程 → STMG
 │   ├── stm2renpy.py         STMG → Ren'Py（反向）
 │   ├── htmlpub.py           STMG → 网页版（HTML）
+│   ├── modcheck.py          美化包静态检查（三条硬性限制）
+│   ├── modpub.py            美化包发布：产出「XXX_美化包」（不含引擎本体）
 │   └── get_pyodide.py       把 Pyodide 拉到本地，网页版就能离线跑真引擎
+├── mod/                     ★ 美化包（外观主题）：none / example_sakura / 你自己的
 ├── demo/                    示例游戏（故意没有素材）
 └── projects/                你自己的项目放这里
 ```
@@ -449,6 +517,19 @@ python tools/selftest.py
 ```
 
 自检覆盖 48 项，改完引擎先跑它比开窗口快得多。
+
+### 美化包工具
+
+```bash
+python tools/modcheck.py                   # 列出美化包 / 当前启用哪个
+python tools/modcheck.py example_sakura    # 详细检查一个包
+python tools/modcheck.py --use example_sakura   # 启用
+python tools/modcheck.py --new 我的主题     # 生成骨架
+
+python tools/modpub.py example_sakura      # 校验通过后打包成「樱花飘落_美化包」
+```
+
+美化包只改外观、不碰引擎，检查项见 [美化包（mod/）](#美化包mod换主题)。
 
 ### Ren'Py 转换器
 
@@ -486,6 +567,7 @@ python tools/renpy2stm.py <游戏目录> --no-assets     # 只转剧本，不拷
 python stmenc/start.py demo
 python stmenc/start.py demo --out dist/我的游戏 --key 我的口令
 python stmenc/start.py demo --no-assets      # 只加密剧本，不打包素材
+python stmenc/start.py demo --no-mod         # 不带上当前启用的美化包
 ```
 
 产出：
@@ -496,10 +578,15 @@ dist/我的游戏/
 ├── options.stmdec     加密的配置
 ├── assets.stmdec      素材打成一个加密资源包
 ├── stmg/              引擎本体
+├── mod/               （若启用了美化包）外观主题，可删
 ├── start.py           生成的启动器（口令写在里面）
 ├── start.bat          双击运行
 └── 打包成exe.bat      用 PyInstaller 封成单文件 exe
 ```
+
+启用了美化包时，当前那份会一起拷进发布版的 `mod/`，玩家看到的就是你的主题；
+不想要就加 `--no-mod`。注意发布版里带的**只是美化包**（样式），引擎依旧是
+`stmg/` 里那份，两者是分开的。
 
 封 exe 需要先装 PyInstaller：
 
@@ -613,7 +700,8 @@ dist/我的游戏_renpy/
 | `**粗体**` `[color=]` `[size=]` | `{b}` `{color=}` `{size=}` |
 
 转不了的会**写进转换报告**，不会静默丢掉：`stm.os` 文件操作、`R.api` 联网、
-`STM.python` 扩展库、嵌套在分支里的 `label`、等宽标记（Ren'Py 没有对应 tag）。
+`STM.python` 扩展库、`python` 代码块、嵌套在分支里的 `label`、等宽标记
+（Ren'Py 没有对应 tag）。
 
 ---
 
@@ -700,6 +788,131 @@ def render(text):
 
 > 网页版发布时也会读 `custom/gui.py`：文字大小、对话框高度、标题背景图会翻成 CSS；
 > 其余（名字框颜色、立绘站位…）是 pygame 专属的，网页用自己的一套。
+
+---
+
+## 美化包（mod/）—— 换主题
+
+想给 STMG 换个外观，但不想碰引擎源码？**美化包**就是干这个的，和给编辑器
+换主题一个意思：`mod/` 下放一个文件夹，写上外观参数和样式，启用即生效。
+
+```
+mod/
+├── active.json          当前启用哪个包
+├── none/                默认包：什么都不改，引擎原生外观
+├── example_sakura/      示例包：粉白配色 + 落樱粒子
+└── 你自己的包/          照上面两份抄一份就能改
+```
+
+一个美化包长这样：
+
+```
+我的主题/
+├── mod.json       清单：包名 / 版本 / 作者 / 说明
+├── gui.py         桌面端外观参数（只能写 CONFIG 字典）
+├── theme.css      网页版样式（发布 HTML 时内联进去）
+├── theme.js       网页版行为，跑在受限沙箱里
+└── 素材            图片 / 音频 / 字体，路径相对本目录
+```
+
+`gui.py` 就这么点东西 —— **只能声明，不能执行**：
+
+```python
+"""我的主题。"""
+
+CONFIG = {
+    "box_radius": 16,
+    "name_bg": (226, 138, 178),
+    "title_top": (58, 34, 58),
+    "title_bottom": (122, 72, 110),
+}
+```
+
+能改哪些项、默认值多少，全在 `stmg/uiconf.py` 的 `DEFAULTS` 里（每条有注释），
+只写想改的即可。外观三层叠加，后面的覆盖前面的：
+
+```
+引擎默认值  <  当前美化包  <  项目自己的 custom/gui.py
+```
+
+### 用起来
+
+```bash
+python start.py demo/script.stm --mod example_sakura     # 这次用这个包
+python start.py demo/script.stm --no-mod                 # 这次不用任何包
+python tools/htmlpub.py demo --mod example_sakura        # 网页版也带上
+
+python tools/modcheck.py                                 # 看有哪些包、当前启用哪个
+python tools/modcheck.py example_sakura                  # 详细检查
+python tools/modcheck.py --use example_sakura            # 切到某个包
+python tools/modcheck.py --new 我的主题                   # 生成新包骨架
+python tools/modpub.py 我的主题                            # 打包成「我的主题_美化包」
+```
+
+启动器里点「**美化包**」按钮也行：列表、启用、新建、检查、发布都在那一个窗口里。
+项目内嵌引擎时，启动器会把当前美化包的**绝对路径**传给游戏进程，所以全局主题
+对内嵌引擎的项目一样生效。
+
+### ⛔ 三条硬性限制
+
+美化包是**主题**，不是**引擎补丁**。下面三条会**静态检查**，不合格的直接拒绝发布
+（`tools/modcheck.py` 和 `tools/modpub.py` 都是逐字节检查的）：
+
+1. **不许出现任何可执行的 Python 代码。** `gui.py` 里只允许「文档字符串 +
+   `CONFIG = {字面量}`」：不许 `import`、不许函数 / 类、不许任何函数调用
+   （`open` `eval` `exec`…）、不许引用 `stmg` `os` `sys` 之类的模块名。
+   CONFIG 的值只能是数字 / 字符串 / 元组 / 列表 / 嵌套字典。
+   → **所以「用美化包改引擎行为」在格式上就是不可能的。**
+   想改引擎（渲染、语法、音频、存档逻辑……）请直接改 `stmg/` 里的源码，
+   那才是引擎该改的地方；那属于你自己的 fork，不是美化包。
+2. **不许带引擎本体和任何可执行文件。** 没有 `stmg/`、`tools/`、`stmenc/`、
+   `pyodide/`，没有 `start.py`、`launcher.py`、`requirements.txt`，
+   没有 `.exe` `.bat` `.dll` `.pyd` `.pyc` `.zip`…… 只允许 `.py`（就那一个 `gui.py`）、
+   `.css`、`.js`、`.json`、`.md`、`.txt` 和图片 / 音频 / 字体。
+3. **不许对外发请求、不许碰存档。** CSS 禁 `@import` 和远程 `url()`；
+   `theme.js` 禁 `eval` / `new Function` / `fetch` / `XMLHttpRequest` /
+   `localStorage` / `document.cookie` / `window.location` 等等。
+   `theme.js` 能用的只有 `STMGTheme` 一个入口：
+
+```js
+STMGTheme.register({
+  name: "我的主题",
+  css: "",                  // 可选：顺手塞段样式
+  onReady(api)  {},         // 页面就绪
+  onTitle(api)  {},         // 回到标题画面
+  onSay(api, line) {},      // 每句台词（line = {who, text}，只读）
+  onChoose(api, opts) {},   // 选择支出现
+  onEnding(api) {},
+});
+```
+
+`api` 里只有 `stage` / `el(sel)` / `layer(name)` / `palette()` / `rect()` /
+`on / off / watch` / `log(msg)` —— 够做装饰层、粒子、光效、闪光，
+不够改剧情、改存档、改引擎。
+
+> 包不合格时引擎**安全回退**到原生外观，不会崩；开发模式下右上角会说明原因。
+
+### 发布的是「美化包」，不是 STMG 本体
+
+```bash
+python tools/modpub.py example_sakura
+```
+
+产出：
+
+```
+dist/mods/樱花飘落_美化包/
+├── 安装说明.md         第一行就写明「这是美化包，不是 STMG 本体」
+├── 校验报告.txt        查过什么、有哪些提示
+└── example_sakura/     ← 这一层丢进 mod/ 就能用
+dist/mods/樱花飘落_美化包.zip
+```
+
+`modpub.py` **只会**产出美化包：不含引擎、不含剧本、不含启动器、不含任何可执行文件，
+名字里也一定带「美化包」。想发布游戏本体请用 `stmenc/start.py`（打包发布）或
+`tools/htmlpub.py`（发布为 HTML）——那是另外两件事，别混。
+
+完整规范、常见问题和踩坑都在 [`mod/README.md`](mod/README.md)。
 
 ---
 

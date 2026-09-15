@@ -1,0 +1,14 @@
+{
+  "kind": "beautify",
+  "id": "example_sakura",
+  "name": "樱花飘落",
+  "version": "1.0.0",
+  "author": "ciallo0721-cmd",
+  "desc": "粉白配色 + 落樱粒子，桌面端和网页版都生效。",
+  "engine": ">=1.0.0",
+  "files": {
+    "gui": "gui.py",
+    "css": "theme.css",
+    "js": "theme.js"
+  }
+}

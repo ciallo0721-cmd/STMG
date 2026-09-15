@@ -9,7 +9,9 @@
 
 from .runtime import Runtime
 
-# 这些事件只是「顺手改变画面/声音」，不用等玩家；其余的都是要停下等操作的
+# 这些事件只是「顺手改变画面/声音」，不用等玩家；其余的都是要停下等操作的。
+# wait 故意**不**在里面：python 代码块逐行显示时，它要真的停够时间再往下走，
+# 所以它和 say / choose 一样会变成当前 block，交给界面去等。
 SIDE_EFFECTS = ("bg", "picture", "sprite", "bgm", "se", "voice",
                 "stop", "hide", "toast", "python", "achieve")
 
@@ -24,6 +26,10 @@ class Session(object):
     # ------------------------------------------------------------------ #
     def reset(self, replay=None, target_say=0):
         self.runtime = Runtime(self.script, self.options, self.dev_mode)
+        # 读档重放：这段路上已经看过的提示不用再演一遍，尤其 python 代码块
+        # 那几秒等待——不静音的话会在重放中途停下来卡住，读档就废了。
+        # 注意代码本身照跑，它算出来的变量后面还要用。
+        self.runtime.quiet = bool(target_say)
         self.gen = self.runtime.run(replay=replay)
         # sprites 是个字典：tag -> {"path":..., "pos": "left"/"center"/"right"}
         # 同时可以站好几张立绘，跟 Ren'Py 的 show 一个意思。
@@ -40,7 +46,11 @@ class Session(object):
             blk = self._pull()
             if blk["t"] == "say" and self.say_count < target_say:
                 continue
+            if blk["t"] == "wait" and self.say_count < target_say:
+                # 兜底：万一还有 wait 漏出来，重放时也别停在它上面
+                continue
             break
+        self.runtime.quiet = False
         self.block = blk
         return blk
 
@@ -162,12 +172,19 @@ class Session(object):
     @property
     def text(self):
         """当前这一句要显示的文本（可能带 md 标记）。"""
-        if self.block and self.block["t"] == "say":
-            return self.block.get("text", "")
+        if self.block:
+            if self.block["t"] == "say":
+                return self.block.get("text", "")
+            if self.block["t"] == "wait" and self.runtime.history:
+                # python 代码块在等下一行提示：对话框继续保持上一句，别突然空掉
+                return self.runtime.history[-1][1]
         return ""
 
     @property
     def speaker(self):
-        if self.block and self.block["t"] == "say":
-            return self.block.get("who")
+        if self.block:
+            if self.block["t"] == "say":
+                return self.block.get("who")
+            if self.block["t"] == "wait" and self.runtime.history:
+                return self.runtime.history[-1][0] or None
         return None

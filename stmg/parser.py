@@ -25,6 +25,18 @@ RESERVED = {"choose", "if", "else", "elif", "endif", "endchoose",
 BLOCK_OPEN_RE = re.compile(r"^<(?P<name>[A-Za-z]*)$")
 BLOCK_CLOSE_RE = re.compile(r"^</?(?P<name>[A-Za-z]*)>$")
 
+# < ... python: 代码 ... > —— 内嵌的 Python 代码块。
+# 它和顶层剧情块长得一模一样（都是 < ... >），所以要在 _split_blocks 之前
+# 先整块抠出来，原地留一行占位符，等 _parse_lines 再还原成语句。
+# 占位行必须**保持原有行数**（拿空行补齐），否则后面每一行的行号全会错位。
+PY_BLOCK_OPEN_RE = re.compile(r"^<\s*(?:python|py)\s*:\s*(.*)$", re.I)
+PY_BLOCK_KW_RE = re.compile(r"^(?:python|py)\s*:\s*(.*)$", re.I)
+PY_BLOCK_MARK_RE = re.compile(r"^__STM_PYBLOCK_(\d+)__$")
+PY_DELAY_RE = re.compile(r"^(?:delay\s*=\s*)?(\d+(?:\.\d+)?)\s*s?$", re.I)
+
+PY_DELAY_DEFAULT = 3.0     # 代码块里 print 出来的行，默认每行隔 3 秒
+PY_DELAY_MAX = 60.0
+
 CALL_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\((.*)\)\s*$", re.S)
 # stm.os(...) —— 受控文件操作。外层只认 stm.os，内层再拆出 操作(path) 和可选的 ,"旧"to"新"
 STM_OS_RE = re.compile(r"^\s*stm\.os\s*\((.*)\)\s*$", re.I | re.S)
@@ -65,6 +77,7 @@ class Script(object):
         self.body = []
         self.ending = []
         self.issues = []
+        self.pyblocks = []      # 抠出来的 python 代码块，语句里按序号引用
 
     @property
     def size(self):
@@ -108,6 +121,86 @@ def _norm_quotes(s):
     for a, b in QUOTE_FIX.items():
         s = s.replace(a, b)
     return s
+
+
+def _dedent_code(code_lines):
+    """去掉代码块整体的公共缩进（块写在 If 里面时，每行都会多 4 格）。"""
+    body = list(code_lines)
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    pads = [len(ln) - len(ln.lstrip(" \t")) for ln in body if ln.strip()]
+    cut = min(pads) if pads else 0
+    return [ln[cut:] if len(ln) >= cut else ln.lstrip() for ln in body]
+
+
+def _extract_pyblocks(text, issues):
+    """把内嵌的 python 代码块抠出来，原地换成占位行。
+
+    两种写法都认（缩进跟着外层，代码的共同缩进会被去掉）：
+
+        <                <python:
+        python:          print("1")
+        print("1")       >
+        >
+
+    冒号后面可以只写一个数字，表示「每行 print 之间隔几秒」，默认 3。
+    返回 (替换后的文本, [{"code": [...], "delay": 3.0, "line": 行号}, ...])
+    """
+    lines = text.splitlines()
+    out, blocks = [], []
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        s = raw.strip()
+        indent = raw[:len(raw) - len(raw.lstrip(" \t"))]
+        head, spec, code_from = None, "", 0
+
+        m = PY_BLOCK_OPEN_RE.match(s)          # <python: 3   （开口和关键词同一行）
+        if m:
+            head, spec, code_from = i, m.group(1), i + 1
+        elif s == "<":                          # < 换行 然后  python:
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines):
+                km = PY_BLOCK_KW_RE.match(lines[j].strip())
+                if km:
+                    head, spec, code_from = j, km.group(1), j + 1
+
+        if head is None:
+            out.append(raw)
+            i += 1
+            continue
+
+        # 收集代码，直到单独一行的 >
+        j, code = code_from, []
+        while j < len(lines) and lines[j].strip() not in (">", "</>"):
+            code.append(lines[j])
+            j += 1
+        if j >= len(lines):
+            issues.append(Issue(head + 1, "python 代码块没有写 > 收尾",
+                                "在代码最后单独写一行 >"))
+            j = len(lines) - 1
+
+        delay = PY_DELAY_DEFAULT
+        txt = (spec or "").strip()
+        if txt:
+            dm = PY_DELAY_RE.match(txt)
+            if dm:
+                delay = max(0.0, min(PY_DELAY_MAX, float(dm.group(1))))
+            else:
+                issues.append(Issue(
+                    head + 1, "python: 后面只认「隔几秒」，这里写的是：%s" % txt[:20],
+                    "写成 python: 3 表示每行隔 3 秒；要跑代码请写在下面几行", "warn"))
+
+        blocks.append({"code": _dedent_code(code), "delay": delay,
+                       "line": head + 1, "code_line": code_from + 1})
+        out.append(indent + "__STM_PYBLOCK_%d__" % (len(blocks) - 1))
+        out.extend([""] * (j - i))              # 补齐行数，保证行号不错位
+        i = j + 1
+    return "\n".join(out), blocks
 
 
 def _split_blocks(text, issues):
@@ -190,7 +283,7 @@ def _looks_like_image(v):
 # --------------------------------------------------------------------------- #
 # 语句解析
 # --------------------------------------------------------------------------- #
-def _parse_lines(lines, issues):
+def _parse_lines(lines, issues, pyblocks=None):
     """把 [(行号, 原文), ...] 解析成语句列表。缩进代表嵌套。"""
     items = []
     for n, raw in lines:
@@ -216,6 +309,20 @@ def _parse_lines(lines, issues):
                 break
 
             low = s.lower().rstrip(":").strip()
+
+            # --- python 代码块（_extract_pyblocks 留下的占位行）---
+            pm = PY_BLOCK_MARK_RE.match(s)
+            if pm:
+                pos[0] += 1
+                idx = int(pm.group(1))
+                pb = pyblocks[idx] if pyblocks and idx < len(pyblocks) else {}
+                stmts.append({"k": "pycode",
+                              "code": list(pb.get("code") or []),
+                              "delay": pb.get("delay", PY_DELAY_DEFAULT),
+                              "code_line": pb.get("code_line") or (n + 1),
+                              "line": pb.get("line") or n})
+                last_block[0] = False
+                continue
 
             # --- 显式结束标记：只有真的在某个分支里才当结束，否则算多余的 ---
             if low in END_KEYWORDS:
@@ -444,6 +551,8 @@ def parse_text(text, path="<memory>"):
         sc.issues.append(Issue(None, "剧本里用了中文引号 “ ”，已经帮你换成英文引号了",
                                "以后直接打英文半角引号更稳妥", "warn"))
     text = COMMENT_RE.sub("", text)
+    # python 代码块也是 < ... > 包的，不先抠出来的话会被 _split_blocks 当成剧情块切开
+    text, sc.pyblocks = _extract_pyblocks(text, sc.issues)
     blocks = _split_blocks(text, sc.issues)
     if not blocks:
         sc.issues.append(Issue(None, "剧本里没找到任何 < ... > 剧情块",
@@ -452,23 +561,35 @@ def parse_text(text, path="<memory>"):
 
     remaining = list(blocks)
 
-    # 第一块：里面有 Start: 就当正文，否则当头
+    # 第一块到底是头还是正文？
+    # 头部只认「名称=值」，所以：出现标签行或 python 代码块 -> 一定是正文；
+    # 否则看「名称=值」占了多大比例，过半才算头部 —— 这样头部里写错一行仍会
+    # 按头部报出「这行不是名称=值」，而整块剧情不会被误判成头。
+    # （「Start」大小写不敏感，写成小写 start 也认）
     first = remaining[0]
-    joined = "\n".join(l for _, l in first[1])
-    if re.search(r"^\s*Start\s*:", joined, re.M):
-        sc.body = _parse_lines(first[1], sc.issues)
+    nonblank = [(n, l) for n, l in first[1] if l.strip()]
+    joined = "\n".join(l for _, l in nonblank)
+    kv = sum(1 for _, l in nonblank
+             if HEADER_KV_RE.match(_norm_quotes(l.strip())))
+    has_label = any(LABEL_RE.match(l.strip()) for _, l in nonblank)
+    is_body = (has_label or PY_BLOCK_MARK_RE.search(joined)
+               or (nonblank and kv * 2 < len(nonblank)))
+
+    if is_body:
+        sc.body = _parse_lines(first[1], sc.issues, sc.pyblocks)
+        remaining.pop(0)
     else:
         sc.header = _parse_header(first[1], sc.issues)
         remaining.pop(0)
+        if remaining:
+            sc.body = _parse_lines(remaining[0][1], sc.issues, sc.pyblocks)
+            remaining.pop(0)
 
-    if remaining:
-        sc.body = _parse_lines(remaining[0][1], sc.issues)
-        remaining.pop(0)
     if remaining:
         end_lines = []
         for _, ls in remaining:
             end_lines.extend(ls)
-        sc.ending = _parse_lines(end_lines, sc.issues)
+        sc.ending = _parse_lines(end_lines, sc.issues, sc.pyblocks)
 
     if not sc.body:
         sc.issues.append(Issue(None, "正文是空的，游戏一开场就结束了",
@@ -504,12 +625,24 @@ def _validate(sc):
                     sc.issues.append(Issue(
                         s["line"], "If 里判断的选项「%s」，在选项里没出现过" % target,
                         "确认 Choose 里的选项文字和这里完全一致", "warn"))
+        if s["k"] == "pycode" and not s.get("code"):
+            sc.issues.append(Issue(
+                s["line"], "python 代码块里一行代码都没有",
+                "在 python: 下面写代码，或者把这个块删掉", "warn"))
+        if s["k"] == "call" and s["method"].lower() == "python" \
+                and s["obj"].upper() in ("STM", "STMG"):
+            from .stdlib_api import check_library
+            ok, why = check_library(s["args"][0] if s["args"] else "")
+            if not ok:
+                sc.issues.append(Issue(
+                    s["line"], "stmg.python 用不了：%s" % why,
+                    '库名要写白名单里的；不需要库就写 stmg.python("none")'))
         if s["k"] == "call" and s["obj"].upper() == "R" and s["method"] == "api":
             key = s["kwargs"].get("key", "")
             if key and key != "option" and not key.startswith("http") and len(key) < 12:
                 sc.issues.append(Issue(
                     s["line"], "R.api 的 key 好像是随便填的，太短了",
                     '正式发布请写 key=option，把密钥放进 options.stm', "warn"))
-    if labels and "Start" not in labels:
+    if labels and not any(l.lower() == "start" for l in labels):
         sc.issues.append(Issue(None, "正文里没有 Start: 标记",
                                "没有也没关系，游戏会直接从头一句开始；想明确起点就加 Start:", "warn"))

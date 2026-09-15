@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """STMG 主界面（pygame）。
 
-界面状态：标题 / 对白 / 选择支 / 询问输入 / 菜单 / 历史 / 存读档 / 报错 / 结束
+界面状态：标题 / 对白 / 选择支 / 询问输入 / 菜单 / 历史 / 存读档 / 报错 / 结束 / 等待
+（等待 = python 代码块逐行飘提示的间隔，到点自己往下走，点一下可以跳过）
 渲染统一画在一张 base 画布上，再整体缩放到窗口，所以剧本写多大分辨率都能跑。
 """
 
@@ -15,7 +16,8 @@ from .audio import Audio
 from .errors import format_exception
 from .session import Session
 
-TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING, GALLERY = range(10)
+(TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING,
+ GALLERY, WAIT) = range(11)
 
 # 界面尺寸、颜色、位置全在 uiconf.DEFAULTS 里，
 # 项目目录下的 custom/gui.py 可以覆盖任意一项——别在这里写死数值。
@@ -57,15 +59,15 @@ class Settings(object):
 
 class App(object):
     def __init__(self, script, options=None, dev_mode=True, auto=False,
-                 script_errors=None):
+                 script_errors=None, mod_id=None, no_mod=False):
         pygame.init()
         self.script = script
         self.dev_mode = dev_mode
         self.root = os.path.dirname(os.path.abspath(script.path))
         self.W, self.H = script.size
         self.settings = Settings(self.root)
-        # 项目自定义界面：custom/gui.py（外观）+ custom/markdown.py（内联标记）
-        self.ui, self.ui_error = uiconf.setup(self.root)
+        # 界面外观三层叠加：引擎默认值 < 美化包（mod/） < custom/gui.py
+        self.ui, self.ui_error = uiconf.setup(self.root, mod_id, no_mod)
 
         self._open_window()
         self.base = pygame.Surface((self.W, self.H)).convert()
@@ -93,6 +95,9 @@ class App(object):
         self.auto = auto
         self.skip = False
         self.auto_timer = 0.0
+        self.wait_timer = 0.0          # python 代码块的等待：已经等了几秒
+        self.wait_dur = 0.0            # 还要等几秒（到点自动往下走）
+        self.achieve_popups = []       # 成就解锁弹窗（update/draw 都会读它）
         self.input_text = ""
         self.backlog_scroll = 0
         self.overlay_from = TITLE
@@ -227,6 +232,16 @@ class App(object):
                 self.transition = None
                 self._prev_frame = None
 
+        # python 代码块的逐行提示：等够 dur 秒就自动推进（点一下可以提前跳过）
+        if self.state == WAIT:
+            self.wait_timer += dt
+            if self.wait_timer >= max(0.0, self.wait_dur):
+                self.wait_timer = 0.0
+                self.wait_dur = 0.0
+                self.session.next_block()
+                self.apply_effects()
+                self.sync_state()
+
         if self.state in (ADVANCE, CHOOSE, QUESTION):
             if self.settings.text_speed < 0:
                 self.reveal = 1e9
@@ -314,7 +329,14 @@ class App(object):
             self.apply_effects()
             self.sync_state()
             return
-        if t == "say":
+        if t == "wait":
+            # python 代码块：这一行的提示刚飘出来，先亮一会儿再显示下一行。
+            # reveal 拉满，让对话框继续完整显示上一句台词。
+            self.wait_dur = float(blk.get("dur") or 0.0)
+            self.wait_timer = 0.0
+            self.reveal = 1e9
+            self.state = WAIT
+        elif t == "say":
             self.state = ADVANCE
         elif t == "choose":
             self.state = CHOOSE
@@ -377,6 +399,12 @@ class App(object):
                 if event.type == pygame.MOUSEWHEEL and self.state == ERROR \
                         and self.error_mode == "script":
                     self.error_scroll = max(0, self.error_scroll - event.y * 3)
+                continue
+
+            if self.state == WAIT:
+                # 等 python 代码块的下一行时，点一下 / 按一下就直接跳过剩下的等待
+                if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                    self.wait_timer = 1e9
                 continue
 
             if self.state == CHOOSE:

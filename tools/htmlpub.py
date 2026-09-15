@@ -7,6 +7,8 @@
     python tools/htmlpub.py demo --engine js        用页面内置解释器（完全离线）
     python tools/htmlpub.py demo --inline           素材内联进 HTML（单文件）
     python tools/htmlpub.py demo --no-assets        不带素材，只出播放器
+    python tools/htmlpub.py demo --mod example_sakura   带上指定的美化包（mod/）
+    python tools/htmlpub.py demo --no-mod           不带任何美化包
     python tools/htmlpub.py demo --pyodide cdn      强制从 CDN 拉 Pyodide
     python tools/htmlpub.py demo --pyodide https://你的镜像/pyodide/v0.26.2/full/
 
@@ -29,6 +31,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -38,6 +41,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from stmg import parser, uiconf                          # noqa: E402
+from stmg import mod as modmod                            # noqa: E402
 
 TPL_PATH = os.path.join(ROOT, "stmg", "webplayer.html")
 ENGINE_DIR = os.path.join(ROOT, "stmg")
@@ -105,7 +109,8 @@ def collect_assets(proj_dir):
     out = []
     for dirpath, dirs, files in os.walk(proj_dir):
         dirs[:] = [d for d in dirs if not d.startswith((".", "_"))
-                   and d not in ("custom", "dist", "game", "assets")]
+                   and d not in ("custom", "dist", "game", "assets",
+                                 "mod", "mod_assets")]
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
             if ext in IMAGE_EXT or ext in AUDIO_EXT:
@@ -142,6 +147,46 @@ def custom_css(ui, inline_assets):
     return "\n".join(rules)
 
 
+def theme_assets(css, theme, out, inline, inline_assets, do_assets=True):
+    """处理美化包 theme.css 里的 url(...)：把图拷进产物目录并把路径改对。
+
+    内联模式（--inline）则直接转成 data URI。远程地址在 modcheck 阶段就被
+    拦掉了，这里再挡一次：美化包不许引用外部资源。
+    """
+    if not css or not theme.get("path"):
+        return css
+    mod_id = theme.get("id") or "mod"
+    rel_prefix = "mod_assets/%s/" % mod_id
+
+    def rep(m):
+        raw = m.group(1).strip().strip("'\"")
+        if not raw or raw.startswith(("data:", "#")) or "://" in raw or raw.startswith("//"):
+            return m.group(0)
+        rel = raw.replace("\\", "/").lstrip("/")
+        if rel.startswith("../"):
+            return m.group(0)
+        src = os.path.join(theme["path"], rel.replace("/", os.sep))
+        if not os.path.isfile(src):
+            print("  美化包素材没找到，保持原样：%s" % raw)
+            return m.group(0)
+        ext = os.path.splitext(rel)[1].lower()
+        if inline:
+            with open(src, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            url = "data:%s;base64,%s" % (MIME.get(ext, "application/octet-stream"), b64)
+        elif do_assets:
+            dst = os.path.join(out, rel_prefix, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            url = rel_prefix + rel
+        else:
+            return m.group(0)
+        inline_assets[rel] = url
+        return "url('%s')" % url
+
+    return re.sub(r"url\(\s*([^)]*)\)", rep, css, flags=re.I)
+
+
 # --------------------------------------------------------------------------- #
 def main(argv):
     args = argv[1:]
@@ -156,6 +201,8 @@ def main(argv):
     do_assets = True
     pyodide = "auto"                 # auto = 本地有就用本地，没有才去 CDN
     title = None
+    mod_id = None
+    no_mod = False
 
     i = 1
     while i < len(args):
@@ -172,6 +219,11 @@ def main(argv):
         elif a == "--title":
             i += 1
             title = args[i]
+        elif a == "--mod":
+            i += 1
+            mod_id = args[i]
+        elif a == "--no-mod":
+            no_mod = True
         elif a == "--inline":
             inline = True
         elif a == "--no-assets":
@@ -246,12 +298,27 @@ def main(argv):
             asset_n += 1
 
     # ---- 项目自己的界面设置（custom/gui.py）----
-    ui = uiconf.load(proj_dir)
+    ui = uiconf.load(proj_dir, mod_id, no_mod)
     box_h = ui.get("box_h") or 0.30
     try:
         box_pct = max(12, min(60, int(float(box_h) * 100)))
     except (TypeError, ValueError):
         box_pct = 24
+
+    # ---- 美化包（mod/）：样式 + 受限脚本 ----
+    theme = modmod.load_theme(proj_dir, mod_id, disabled=no_mod)
+    theme_css_text = ""
+    theme_js_text = ""
+    theme_label = ""
+    if theme["id"] != modmod.DEFAULT_ID:
+        if not theme["ok"]:
+            print("美化包：%s" % theme["reason"])
+        else:
+            theme_label = str(theme["meta"].get("name") or theme["id"])
+            theme_css_text = theme_assets(theme.get("css") or "", theme, out,
+                                          inline, assets_map, do_assets)
+            theme_js_text = theme.get("js") or ""
+            print("美化包：%s（%s）" % (theme_label, theme["id"]))
 
     # ---- 渲染 ----
     with open(TPL_PATH, "r", encoding="utf-8") as f:
@@ -274,6 +341,9 @@ def main(argv):
         "__STMG_FSIZE__": str(fsize),
         "__STMG_BOX_H__": str(box_pct),
         "__STMG_CUSTOM_CSS__": custom_css(ui, assets_map),
+        "__STMG_THEME_CSS__": theme_css_text,
+        "__STMG_THEME_JS__": theme_js_text,
+        "__STMG_THEME_NAME__": html_esc(theme_label),
         "__STMG_DATA__": js_lit(ast),
         "__STMG_ASSETS__": js_lit(assets_map),
         "__STMG_KEY__": js_lit("stmg:%s" % name),

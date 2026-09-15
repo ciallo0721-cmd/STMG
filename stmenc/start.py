@@ -7,6 +7,7 @@
     python stmenc/start.py demo
     python stmenc/start.py demo --out dist/我的游戏 --key 我的口令
     python stmenc/start.py demo --no-assets      不打包素材，只加密剧本
+    python stmenc/start.py demo --no-mod         不带上当前启用的美化包（外观主题）
     python stmenc/start.py demo --exe            顺手跑一次 pyinstaller（要先装）
 
 产出（默认 dist/<游戏目录名>/）：
@@ -30,6 +31,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from stmg import crypto, options as optmod, pack                # noqa: E402
+from stmg import mod as modmod                                  # noqa: E402
 
 LAUNCHER = '''#!/usr/bin/env python
 # -*- coding: utf-8 -*-
@@ -116,6 +118,7 @@ def main(argv):
     key = None
     do_assets = True
     do_exe = False
+    no_mod = False
 
     i = 1
     while i < len(args):
@@ -130,6 +133,8 @@ def main(argv):
             do_assets = False
         elif a == "--exe":
             do_exe = True
+        elif a == "--no-mod":
+            no_mod = True
         i += 1
 
     if not os.path.isdir(src):
@@ -168,6 +173,20 @@ def main(argv):
         patterns = opt.get("dec") or ["*.png", "*.jpg", "*.mp3", "*.wav", "*.ogg"]
         n, size = pack.build(src, patterns, os.path.join(out, "assets.stmdec"), key)
         print("素材打包：%d 个文件，%.1f KB" % (n, size / 1024.0))
+
+    # 3.5 美化包（外观主题）：当前启用哪份就把哪份带过去。
+    #     发布版里只放美化包自己的文件夹（gui.py / theme.css / theme.js / 素材），
+    #     引擎还是原来那份引擎 —— 美化包永远不含引擎本体。
+    if not no_mod:
+        theme = modmod.load_theme(src)
+        if theme["id"] != modmod.DEFAULT_ID and theme.get("path"):
+            if theme.get("ok"):
+                shutil.copytree(theme["path"], os.path.join(out, "mod", theme["id"]))
+                modmod.set_active(theme["id"], out)
+                print("美化包：%s（%s）已随发布版带过去，不想带就加 --no-mod"
+                      % (theme["meta"].get("name") or theme["id"], theme["id"]))
+            else:
+                print("美化包：%s（这次没带上）" % theme["reason"])
 
     # 4. 启动器
     with open(os.path.join(out, "start.py"), "w", encoding="utf-8") as f:

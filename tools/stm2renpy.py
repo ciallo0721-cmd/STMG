@@ -406,6 +406,15 @@ class Conv(object):
         lines.append("%s%s %s" % (pad, who, text))
         self.stats["台词"] += 1
 
+    # --- python 代码块 ---
+    def do_pycode(self, s, depth, lines):
+        pad = "    " * depth
+        self.todo.append((s.get("line"),
+                          "python 代码块转不过去（Ren'Py 里没有对应写法）",
+                          "搬到 Ren'Py 就手工改成 python: 块或 $ 语句"))
+        lines.append("%s# [没转] python 代码块（%d 行）"
+                     % (pad, len(s.get("code") or [])))
+
     # --- 角色注册 ---
     def do_define(self, s, depth, lines):
         if s.get("name"):

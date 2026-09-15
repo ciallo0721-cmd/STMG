@@ -45,6 +45,7 @@ except ImportError:
     _fail_no_ctk()
 
 from stmg import project as proj                       # noqa: E402
+from stmg import mod as modmod                         # noqa: E402
 
 PY = sys.executable
 START = os.path.join(HERE, "start.py")
@@ -52,6 +53,8 @@ CHECK = os.path.join(HERE, "tools", "check.py")
 PACK = os.path.join(HERE, "stmenc", "start.py")
 HTMLPUB = os.path.join(HERE, "tools", "htmlpub.py")
 STM2RPY = os.path.join(HERE, "tools", "stm2renpy.py")
+MODCHECK = os.path.join(HERE, "tools", "modcheck.py")
+MODPUB = os.path.join(HERE, "tools", "modpub.py")
 
 ACCENT = "#5b7cfa"
 ACCENT_HOVER = "#4169e1"
@@ -181,6 +184,7 @@ class Launcher(ctk.CTk):
             ("打包发布", self.run_pack, False),
             ("发布为 HTML", self.run_html, True),
             ("转为 Ren'Py", self.run_stm2renpy, True),
+            ("美化包", self.run_mods, False),
             ("打开文件夹", self.open_folder, False),
             ("内嵌引擎", self.embed_engine, False),
             ("清空日志", self.clear_log, False),
@@ -202,6 +206,7 @@ class Launcher(ctk.CTk):
 
         ctk.CTkLabel(right,
                      text="内嵌引擎 —— 把 stmg/ 拷进项目，项目完全开放，改项目里的 stmg/*.py 即可自定义\n"
+                          "美化包　 —— 换外观（对话框 / 配色 / 网页样式），不含引擎、不改引擎\n"
                           "发布为 HTML —— 生成能直接双击 / 丢上网页的版本\n"
                           "转为 Ren'Py —— 把剧本转成 .rpy，产物在 dist/<项目名>_renpy/",
                      font=self.f(11), text_color=SUB, anchor="w", justify="left"
@@ -357,7 +362,8 @@ class Launcher(ctk.CTk):
         script = proj.script_of(self.current["path"])
         self.log_line("启动游戏：%s" % self.current["title"])
         try:
-            subprocess.Popen([PY, self._local_start(), script], cwd=self.current["path"],
+            subprocess.Popen([PY, self._local_start(), script] + self._mod_args(),
+                             cwd=self.current["path"],
                              env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         except Exception as e:                         # noqa: BLE001
             self.log_line("启动失败：%s" % e)
@@ -417,6 +423,40 @@ class Launcher(ctk.CTk):
             return
         out = os.path.join(HERE, "dist", "%s_renpy" % self.current["name"])
         self._run([PY, STM2RPY, self.current["path"], "--out", out], "转为 Ren'Py")
+
+    # ---------------------------------------------------------------- 美化包
+    def _mod_args(self):
+        """把当前启用的美化包用**绝对路径**传给游戏进程。
+
+        内嵌引擎的项目用的是它自己那份 stmg，看不到启动器目录下的 mod/，
+        所以直接给路径，两种项目都能吃上同一个美化包。
+        """
+        try:
+            mid = modmod.active_id()
+            if not mid or mid == modmod.DEFAULT_ID:
+                return []
+            p = modmod.find_mod(mid)
+            return ["--mod", p] if p else []
+        except Exception:                              # noqa: BLE001
+            return []
+
+    def run_mods(self):
+        ModDialog(self)
+
+    def run_modcheck(self, mid):
+        self._run([PY, MODCHECK, mid], "检查美化包")
+
+    def run_modpub(self, mid):
+        self._run([PY, MODPUB, mid], "发布美化包")
+        self.log_line("注意：发布出来的是「美化包」（外观主题），不是 STMG 本体 —— "
+                      "里面没有引擎、没有剧本、没有启动器。")
+        self.log_line("产物在：%s" % os.path.join(HERE, "dist", "mods"))
+
+    def open_mod_dir(self):
+        try:
+            os.startfile(modmod.find_dir())             # noqa: S606 - Windows 专用
+        except Exception as e:                         # noqa: BLE001
+            self.log_line("打不开：%s" % e)
 
     def edit_script(self):
         if not self._need():
@@ -1922,6 +1962,190 @@ class NewProjectDialog(BaseDialog):
                        "title": self.e_title.get().strip() or name,
                        "size": self.e_size.get()}
         self.destroy()
+
+
+class ModDialog(BaseDialog):
+    """美化包管理器：列表 / 启用 / 新建 / 检查 / 发布。
+
+    美化包 = 外观主题（mod/<包名>/：gui.py + theme.css + theme.js）。
+    它只改界面长什么样，**不含引擎、不改引擎** —— 想改引擎行为请去改
+    stmg/ 里的源码。发布时产出的也一定叫「XXX_美化包」，不是 STMG 本体。
+    """
+
+    def __init__(self, app):
+        self._deactivate_windows_window_header_manipulation = True
+        super().__init__(app, "美化包（mod/）", 700, 580)
+        self.app = app
+        self.packs = []
+        self.sel = None
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=18, pady=(14, 0))
+        ctk.CTkLabel(top, text="美化包 = 外观主题", font=app.f(15, True), text_color=INK,
+                     anchor="w").pack(anchor="w")
+        ctk.CTkLabel(top,
+                     text="只改界面长什么样（对话框 / 配色 / 标题界面 / 网页样式），"
+                          "不含引擎、不含剧本，也改不了引擎行为。\n"
+                          "想改引擎请直接改 stmg/ 里的源码 —— 那是引擎该待的地方。",
+                     font=app.f(11.5), text_color=SUB, anchor="w", justify="left"
+                     ).pack(anchor="w", pady=(2, 0))
+
+        self.lbl_dir = ctk.CTkLabel(self, text="", font=app.f(11), text_color=SUB,
+                                    anchor="w", justify="left")
+        self.lbl_dir.pack(fill="x", padx=18, pady=(6, 0))
+
+        self.box = ctk.CTkScrollableFrame(self, fg_color=CARD, corner_radius=12)
+        self.box.pack(fill="both", expand=True, padx=18, pady=(10, 6))
+
+        self.lbl_info = ctk.CTkLabel(self, text="", font=app.f(11.5), text_color=SUB,
+                                     anchor="w", justify="left", wraplength=640)
+        self.lbl_info.pack(fill="x", padx=18)
+
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=18, pady=(10, 16))
+        for cols in (["启用选中的", "新建美化包", "打开文件夹"],
+                     ["检查这个包", "发布为美化包", "关闭"]):
+            row = ctk.CTkFrame(bar, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+            for text in cols:
+                cmd = {"启用选中的": self._use, "新建美化包": self._new,
+                       "打开文件夹": self.app.open_mod_dir,
+                       "检查这个包": self._check, "发布为美化包": self._pub,
+                       "关闭": self.destroy}[text]
+                hot = text in ("启用选中的", "发布为美化包")
+                if text == "关闭":
+                    ctk.CTkButton(row, text=text, height=36, corner_radius=9,
+                                  font=app.f(12.5), fg_color="transparent", text_color=INK,
+                                  border_width=1, border_color=BORDER, hover_color=HOVER,
+                                  command=cmd).pack(side="left", expand=True, fill="x",
+                                                    padx=(0, 6))
+                    continue
+                ctk.CTkButton(row, text=text, height=36, corner_radius=9,
+                              font=app.f(12.5),
+                              fg_color=ACCENT if hot else "transparent",
+                              text_color="#ffffff" if hot else INK,
+                              border_width=0 if hot else 1, border_color=BORDER,
+                              hover_color=ACCENT_HOVER if hot else HOVER,
+                              command=cmd).pack(side="left", expand=True, fill="x",
+                                                padx=(0, 6))
+
+        self.reload()
+        self.wait_window(self)
+
+    # ------------------------------------------------------------------ #
+    def reload(self):
+        self.packs = modmod.list_mods()
+        active = modmod.active_id()
+        self.lbl_dir.configure(text="目录：%s\n当前启用：%s" % (modmod.find_dir(), active))
+        for w in self.box.winfo_children():
+            w.destroy()
+        if not self.packs:
+            ctk.CTkLabel(self.box, text="还没有任何美化包。点「新建美化包」造一个。",
+                         font=self.app.f(12), text_color=SUB).pack(pady=20)
+            self.sel = None
+            self.lbl_info.configure(text="")
+            return
+
+        if self.sel is None or self.sel not in [p["id"] for p in self.packs]:
+            self.sel = active if active in [p["id"] for p in self.packs] else self.packs[0]["id"]
+
+        for p in self.packs:
+            errs = modmod.errors_of(modmod.verify(p["path"]))
+            tag = "" if not errs else "　⚠ %d 个问题" % len(errs)
+            star = "★ " if p["id"] == active else "　 "
+            on = p["id"] == self.sel
+            ctk.CTkButton(
+                self.box,
+                text="%s%s　%s　v%s　by %s%s" % (star, p["id"], p["name"], p["version"],
+                                                p["author"], tag),
+                anchor="w", height=40, corner_radius=9, font=self.app.f(12),
+                fg_color=ACCENT if on else ("transparent", "#232733"),
+                text_color="#ffffff" if on else INK,
+                hover_color=ACCENT_HOVER if on else HOVER,
+                command=lambda mid=p["id"]: self._select(mid),
+            ).pack(fill="x", padx=8, pady=3)
+
+        self._show_info()
+
+    def _show_info(self):
+        p = [x for x in self.packs if x["id"] == self.sel]
+        if not p:
+            return
+        p = p[0]
+        issues = modmod.verify(p["path"])
+        errs = modmod.errors_of(issues)
+        warns = modmod.warnings_of(issues)
+        text = "%s（%s）· %s\n%s" % (p["name"], p["id"], p["desc"] or "（没写说明）",
+                                     p["path"])
+        if errs:
+            text += "\n⚠ 不合格，引擎会安全回退到原生外观：%s" % errs[0]
+        elif warns:
+            text += "\n提示：%s" % warns[0]
+        self.lbl_info.configure(text=text)
+
+    def _select(self, mid):
+        self.sel = mid
+        self.reload()
+
+    def _current(self):
+        return [x for x in self.packs if x["id"] == self.sel]
+
+    # ------------------------------------------------------------------ #
+    def _use(self):
+        p = self._current()
+        if not p:
+            return
+        mid = p[0]["id"]
+        errs = modmod.errors_of(modmod.verify(p[0]["path"]))
+        if errs:
+            InfoDialog(self.app, "这个包不合格", "先修好再启用：\n%s" % errs[0])
+            return
+        try:
+            modmod.set_active(mid)
+        except OSError as e:
+            self.app.log_line("启用失败：%s" % e)
+            return
+        self.app.log_line("已启用美化包：%s。下次启动游戏 / 发布 HTML 就会用上。"
+                          % mid)
+        self.reload()
+
+    def _new(self):
+        EditOneFieldDialog(self.app, "新建美化包",
+                           "包名（会作为文件夹名，建议英文 / 数字 / 下划线）",
+                           "my_theme", self._do_new)
+
+    def _do_new(self, name):
+        name = (name or "").strip()
+        if not name:
+            return
+        try:
+            path = modmod.create_mod(HERE, name, name=name)
+        except OSError as e:
+            self.app.log_line("新建失败：%s" % e)
+            return
+        self.app.log_line("已生成美化包骨架：%s" % path)
+        self.app.log_line("改 gui.py 里的 CONFIG 就能看到效果；theme.css / theme.js 管网页版。")
+        self.sel = os.path.basename(path)
+        self.reload()
+
+    def _check(self):
+        p = self._current()
+        if p:
+            self.app.run_modcheck(p[0]["id"])
+
+    def _pub(self):
+        p = self._current()
+        if not p:
+            return
+        errs = modmod.errors_of(modmod.verify(p[0]["path"]))
+        if errs:
+            InfoDialog(self.app, "这个包不合格",
+                       "不合格的美化包不能发布。\n\n%s\n\n"
+                       "美化包只能声明外观：不许有可执行代码、不许带引擎和可执行文件、"
+                       "不许联网碰存档。想改引擎行为请去改 stmg/ 源码。"
+                       % "\n".join(errs[:5]))
+            return
+        self.app.run_modpub(p[0]["id"])
 
 
 class HtmlDialog(BaseDialog):

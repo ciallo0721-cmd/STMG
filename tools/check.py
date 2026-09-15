@@ -62,6 +62,10 @@ def main(argv):
     print("台词/旁白 %d 句 · 选择支 %d 处 · 引擎调用 %d 次"
           % (len(says), len(chooses), len(calls)))
 
+    pys = [s for s in sc.walk() if s["k"] == "pycode"]
+    if pys:
+        print("python 代码块 %d 处（开发模式专属：发布版会整块跳过）" % len(pys))
+
     # 素材存在性
     ASSET_METHODS = {"cg", "bg", "background", "picture", "play",
                      "sound", "voice"}

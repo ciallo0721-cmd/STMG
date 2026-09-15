@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """STMG 界面配置 —— 让**项目自己**决定界面长什么样。
 
-引擎默认外观写在下面的 DEFAULTS 里。项目目录下放一个 `custom/gui.py`，
-里面写：
+引擎默认外观写在下面的 DEFAULTS 里。外观按三层叠加，后面的覆盖前面的：
+
+    1. 引擎默认值（这个文件里的 DEFAULTS）
+    2. 当前启用的美化包（mod/<包名>/gui.py，见 stmg/mod.py）
+    3. 项目自己的 `custom/gui.py`
+
+项目目录下放一个 `custom/gui.py`，里面写：
 
     CONFIG = {
         "box_h": 0.26,
@@ -101,12 +106,31 @@ def _clone(v):
     return dict(v) if isinstance(v, dict) else v
 
 
-def load(root):
-    """读 <root>/custom/gui.py 的 CONFIG，和默认值合并后返回。
+def load(root, mod_id=None, no_mod=False):
+    """读界面配置，三层合并后返回。
 
-    读不了也不影响游戏，错误塞在返回值里的 `_error` 里面。
+        引擎默认值  <  当前美化包（mod/）  <  <root>/custom/gui.py
+
+    读不了也不影响游戏，错误塞在返回值里的 `_error` / `_mod_error` 里面。
+    `mod_id` 指定用哪个美化包，`no_mod=True` 表示这次不用任何美化包。
     """
     cfg = {k: _clone(v) for k, v in DEFAULTS.items()}
+
+    # ---- 第一层：美化包（mod/ 里选中的主题）----
+    try:
+        from . import mod as modmod
+        theme = modmod.load_theme(root, mod_id, disabled=no_mod)
+        cfg["_mod"] = theme.get("id") or modmod.DEFAULT_ID
+        cfg["_mod_path"] = theme.get("path") or ""
+        meta = theme.get("meta") or {}
+        cfg["_mod_name"] = str(meta.get("name") or cfg["_mod"])
+        if theme.get("reason") and not theme.get("ok"):
+            cfg["_mod_error"] = theme["reason"]
+        modmod.apply_to(cfg, theme, root)
+    except Exception as e:                                 # noqa: BLE001
+        cfg["_mod_error"] = "美化包加载失败：%s: %s" % (type(e).__name__, e)
+
+    # ---- 第二层：项目自己的 custom/gui.py（优先级最高）----
     path = os.path.join(root, "custom", "gui.py")
     if not os.path.isfile(path):
         return cfg
@@ -173,8 +197,8 @@ def load_markdown(root):
     return None
 
 
-def setup(root):
+def setup(root, mod_id=None, no_mod=False):
     """一次性搞定：返回 (配置, 错误信息或 None)。"""
-    cfg = load(root)
-    err = load_markdown(root) or cfg.get("_error")
+    cfg = load(root, mod_id, no_mod)
+    err = (load_markdown(root) or cfg.get("_error") or cfg.get("_mod_error"))
     return cfg, err

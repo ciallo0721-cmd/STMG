@@ -1,0 +1,14 @@
+{
+  "kind": "beautify",
+  "id": "none",
+  "name": "无美化",
+  "version": "1.0.0",
+  "author": "STMG",
+  "desc": "引擎原生外观，不做任何修改。",
+  "engine": ">=1.0.0",
+  "files": {
+    "gui": "gui.py",
+    "css": "theme.css",
+    "js": "theme.js"
+  }
+}

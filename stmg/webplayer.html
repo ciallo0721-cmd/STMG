@@ -167,6 +167,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* 项目自己的界面设置（来自 custom/gui.py）会注在这里 */
 __STMG_CUSTOM_CSS__
 </style>
+<style id="stmg-theme-css">
+/* 美化包（mod/）的样式注在这里，排在引擎样式后面，所以直接覆盖就行。
+   __STMG_THEME_NAME__ 是当前美化包的名字，留作标记。 */
+__STMG_THEME_CSS__
+</style>
 </head>
 <body>
 <div id="app">
@@ -477,6 +482,10 @@ function* execStmt(s){
     case "sprite": yield spriteEvent(s); break;
     case "call": yield* doCall(s); break;
     case "stm_os": yield* doStmOs(s); break;
+    case "pycode":
+      // 内置解释器跑不了剧本里的 Python 代码；wasm 引擎（默认）是真跑得起来的
+      yield {t:"toast", text:"网页版内置解释器不支持 python 代码块（用默认的 wasm 引擎才有）"};
+      break;
     default: break;
   }
 }
@@ -777,6 +786,20 @@ function stopAudio(what){
 }
 
 /* ---------- 提示 ---------- */
+/* ---------- python 代码块的逐行等待（点一下可以跳过）---------- */
+let WAITING = false, WAIT_SKIP = false;
+function waitFor(ms){
+  return new Promise((res) => {
+    const t0 = Date.now();
+    WAITING = true;
+    const tick = setInterval(() => {
+      if (WAIT_SKIP || Date.now() - t0 >= ms){
+        WAIT_SKIP = false; WAITING = false;
+        clearInterval(tick); res();
+      }
+    }, 50);
+  });
+}
 let toastEl = null;
 function toast(text){
   if (!toastEl){
@@ -805,6 +828,7 @@ async function pump(ans){
       ans = undefined;
       if (!ev || ev.t === "end"){ finish(); return; }
       if (ev.t === "fatal"){ toast(ev.message || "剧本跑出错了"); finish(); return; }
+      if (ev.t === "wait"){ await waitFor((ev.dur || 3) * 1000); continue; }
       if (ev.t === "say"){
         SAYN++;
         HISTORY.push({who:ev.who, text:ev.text});
@@ -869,6 +893,7 @@ function showSay(ev){
   runs = mdRuns(ev.text);
   shown = 0;
   typeStep();
+  STMGTheme.say({who: ev.who || "", text: ev.text || ""});
 }
 function typeStep(){
   clearTimeout(typer);
@@ -887,6 +912,7 @@ function onTyped(){
 }
 function isTyping(){ return shown < runsLen(runs); }
 function advance(){
+  if (WAITING){ WAIT_SKIP = true; return; }
   if (MODE !== "play" || ENGINE_BUSY) return;
   if (isTyping()){ shown = runsLen(runs); elText.innerHTML = runsHTML(runs, shown); onTyped(); return; }
   clearTimeout(autoTimer);
@@ -908,6 +934,7 @@ function showChoose(ev){
     box.appendChild(b);
   });
   $("choose").classList.add("on");
+  STMGTheme.choose(ev.options.slice());
 }
 function showAsk(ev){
   MODE = "ask";
@@ -932,6 +959,7 @@ function finish(){
   elCtrl.classList.remove("on");
   stopAudio("all");
   $("ending").classList.add("on");
+  STMGTheme.ending();
 }
 
 /* ---------- 开始 / 读档 ---------- */
@@ -1063,6 +1091,7 @@ $("e-restart").onclick = () => { newGame(); };
 $("e-title").onclick = () => {
   stopAudio("all"); elsHide(); $("ending").classList.remove("on");
   MODE = "title"; $("title").classList.add("on");
+  STMGTheme.title();
 };
 document.querySelectorAll("[data-close]").forEach((b) => {
   b.onclick = () => {
@@ -1107,10 +1136,85 @@ document.addEventListener("keyup", (e) => {
 });
 window.addEventListener("beforeunload", () => { if (MODE === "play") writeSave(0); });
 
+/* ---------- 美化包（mod/）沙箱 ---------- */
+/* 美化包里的 theme.js 只能通过这个入口碰页面：拿一块装饰层 + 几个生命周期回调。
+   它没有 localStorage / fetch / eval，碰不到存档，也改不了引擎——
+   想改引擎行为请去改 stmg/ 源码，那边才是引擎该待的地方。 */
+const STMGTheme = (function (){
+  const EV_OK = {click:1, dblclick:1, pointerdown:1, pointerup:1, pointermove:1,
+                 pointerover:1, pointerout:1, pointerenter:1, pointerleave:1,
+                 mousemove:1, mousedown:1, mouseup:1, touchstart:1, touchend:1,
+                 touchmove:1, wheel:1, animationend:1, transitionend:1};
+  const WIN_OK = {keydown:1, keyup:1, resize:1, scroll:1, visibilitychange:1};
+  let hooks = null, ready = false;
+
+  const API = {
+    get stage(){ return stage; },
+    el(sel){
+      try { return stage.querySelector(String(sel)); } catch (e){ return null; }
+    },
+    layer(name){
+      const key = "stmg_deco_" + String(name || "theme");
+      let el = stage.querySelector("." + key);
+      if (!el){
+        el = document.createElement("div");
+        el.className = key;
+        el.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:10;overflow:hidden";
+        stage.appendChild(el);
+      }
+      return el;
+    },
+    palette(){
+      const cs = getComputedStyle(document.documentElement);
+      const get = (n, d) => ((cs.getPropertyValue(n) || "").trim() || d);
+      return {accent:get("--accent", "#7fb3ff"), accent2:get("--accent2", "#b39ddb"),
+              ink:get("--ink", "#eef0f7"), sub:get("--sub", "#9aa0b5"),
+              radius:get("--radius", "16px")};
+    },
+    rect(){
+      return {w: Number(SCRIPT.w) || stage.clientWidth,
+              h: Number(SCRIPT.h) || stage.clientHeight};
+    },
+    on(name, fn){ if (EV_OK[name] && typeof fn === "function") stage.addEventListener(name, fn); },
+    off(name, fn){ if (EV_OK[name] && typeof fn === "function") stage.removeEventListener(name, fn); },
+    watch(name, fn){ if (WIN_OK[name] && typeof fn === "function") window.addEventListener(name, fn); },
+    log(msg){ console.log("[美化包] " + String(msg)); }
+  };
+
+  function call(name, a, b){
+    if (!hooks || typeof hooks[name] !== "function") return;
+    try { hooks[name](API, a, b); }
+    catch (e){ console.warn("[美化包] " + name + " 出错：", e); }
+  }
+
+  return {
+    register(obj){
+      if (!obj || typeof obj !== "object") return;
+      hooks = obj;
+      if (obj.css){
+        const s = document.createElement("style");
+        s.id = "stmg-theme-inline-css";
+        s.textContent = String(obj.css);
+        document.head.appendChild(s);
+      }
+      if (ready) call("onReady");       // 注册得晚也没关系
+    },
+    name(){ return hooks ? String(hooks.name || "") : ""; },
+    ready(){ if (ready) return; ready = true; call("onReady"); },
+    title(){ call("onTitle"); },
+    say(line){ call("onSay", line); },
+    choose(opts){ call("onChoose", opts); },
+    ending(){ call("onEnding"); }
+  };
+})();
+window.STMGTheme = STMGTheme;
+
 /* ---------- 启动 ---------- */
 loadCfg();
 applyCfg();
 fit();
+STMGTheme.title();     // 标题画面（美化包可以借这个时机放装饰）
+STMGTheme.ready();     // DOM 就绪，通知美化包
 $("engine-state").textContent = ENGINE_KIND === "js"
   ? "引擎：内置解释器（离线可用）"
   : "引擎：WebAssembly 预热中…";
@@ -1162,6 +1266,11 @@ if (new URLSearchParams(location.search).has("selftest")){
   });
 }
 
+</script>
+<script>
+/* 美化包（mod/）的 theme.js 注在这里，跑在上面的 STMGTheme 沙箱里。
+   没启用美化包（或包里没有 theme.js）时，这一段是空的。 */
+__STMG_THEME_JS__
 </script>
 </body>
 </html>

@@ -15,11 +15,14 @@
     stop/hide    停音频 / 隐藏图层   what
     transition  转场遮罩              kind, dur
     toast    右上角提示              text
+    wait     停一会儿再往下           dur    （python 代码块逐行显示用）
     python   STM.python 载入         name
     fatal    跑不动了                message, trace
     end      剧本结束
 """
 
+import contextlib
+import io
 import os
 import random
 import re
@@ -28,6 +31,10 @@ import types
 from . import pack, save as savemod, stdlib_api, stmos
 from .errors import STMFatal, format_exception
 from .markdown import strip_quotes
+from .parser import PY_DELAY_DEFAULT
+
+# python 代码块一次最多往右上角显示几行，免得一个死循环刷爆提示
+PY_MAX_LINES = 30
 
 NAME_COLORS = ["#ff88bb", "#7fb3ff", "#6fd6a8", "#ffc44d",
                "#c79bff", "#ff9d7a", "#5fc9d6"]
@@ -101,6 +108,8 @@ class Runtime(object):
         self.history = []
         self.answers = []          # 存档用：[("choose", 选项名), ("question", 输入)]
         self._libraries = {}
+        self._lib_modules = {}     # stmg.python("math") 声明过的库：名字 -> 模块
+        self.quiet = False         # True = 读档重放中：照跑代码，但不重复弹提示
         self._replay = []
         self._replay_i = 0
         self._labels = {s["name"]: i for i, s in enumerate(script.body)
@@ -269,6 +278,9 @@ class Runtime(object):
             elif k == "call":
                 yield from self.do_call(s)
 
+            elif k == "pycode":
+                yield from self.do_pyblock(s)
+
             elif k == "stm_os":
                 yield from self.do_stmos(s)
 
@@ -277,6 +289,8 @@ class Runtime(object):
     # ------------------------------------------------------------------ #
     def do_call(self, s):
         obj = (s["obj"] or "").upper()
+        if obj == "STMG":                 # 剧本里 stmg.python(...) 和 STM.python(...) 等价
+            obj = "STM"
         method = s["method"].lower()
         args, kw = s["args"], s["kwargs"]
         a0 = args[0] if args else ""
@@ -338,6 +352,8 @@ class Runtime(object):
             if method == "display":
                 yield {"t": "toast", "text": a0}
             elif method == "python":
+                # stmg.python("math") 声明后面 python 代码块能用的库；
+                # stmg.python("none") 表示不需要库，也是合法的。
                 ok, why = stdlib_api.check_library(a0)
                 if not ok:
                     raise STMFatal("STM.python: " + why)
@@ -345,11 +361,14 @@ class Runtime(object):
                     yield {"t": "toast",
                            "text": "发布版不允许 STM.python(%s)，已忽略" % a0}
                 else:
-                    if a0 in stdlib_api.RELEASE_BLOCKED:
-                        yield {"t": "toast",
-                               "text": "STM.python(%s) 被标记为仅开发模式可用" % a0}
-                    self._libraries[a0] = True
-                    yield {"t": "python", "name": a0}
+                    for name, mod in stdlib_api.load_libraries(a0).items():
+                        if name in stdlib_api.RELEASE_BLOCKED:
+                            yield {"t": "toast",
+                                   "text": "STM.python(%s) 被标记为仅开发模式可用" % name}
+                            continue
+                        self._libraries[name] = True
+                        self._lib_modules[name] = mod
+                        yield {"t": "python", "name": name}
             else:
                 yield {"t": "toast", "text": "STM.%s 这个函数还没实现" % s["method"]}
 
@@ -410,6 +429,98 @@ class Runtime(object):
             if not ok and self.dev_mode:
                 yield {"t": "toast", "text": "stm.os revision：%s" % msg}
             return
+
+    def do_pyblock(self, s):
+        """执行内嵌的 python 代码块。
+
+        代码里 print 出来的东西会一行一条地飘到右上角（toast），
+        行与行之间隔 delay 秒（默认 3 秒，写成 `python: 2` 就是 2 秒）。
+
+        立场和 STM.python 一致：**开发模式专属**、只能碰白名单库、
+        发布版整块跳过。所以它适合做调试输出 / 算点东西，
+        不适合当玩家看得见的正式功能。
+        """
+        if not self.dev_mode:
+            yield {"t": "toast", "text": "发布版不允许 python 代码块，已忽略"}
+            return
+
+        src = "\n".join(s.get("code") or [])
+        if not src.strip():
+            return
+
+        try:
+            delay = max(0.0, float(s.get("delay", PY_DELAY_DEFAULT)))
+        except (TypeError, ValueError):
+            delay = PY_DELAY_DEFAULT
+
+        first = s.get("code_line") or ((s.get("line") or 0) + 1)
+        fname = "%s:行%d" % (os.path.basename(self.script.path or "script.stm"), first)
+        try:
+            code = compile(src, fname, "exec")
+        except SyntaxError as e:
+            raise STMFatal(
+                "python 代码块第 %d 行（剧本第 %d 行）语法不对：%s\n  %s\n"
+                '  提示：引号要用半角的 " ，中文的 “ ” 会被当成语法错误'
+                % (e.lineno or 1, first + (e.lineno or 1) - 1, e.msg,
+                   (e.text or "").strip()))
+
+        env = self._py_env()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                exec(code, env)
+        except Exception as e:                        # noqa: BLE001
+            raise STMFatal("python 代码块出错：%s: %s" % (type(e).__name__, e))
+        self._py_export(env)
+
+        lines = [ln.rstrip() for ln in buf.getvalue().splitlines()]
+        lines = [ln for ln in lines if ln.strip()]
+        if not lines:
+            return
+        extra = max(0, len(lines) - PY_MAX_LINES)
+        lines = lines[:PY_MAX_LINES]
+
+        # 读档重放：代码照跑（后面的剧情可能要用它算出来的变量），
+        # 但提示和等待不再演一遍——不然一读档就卡在几秒钟的提示里。
+        if self.quiet:
+            return
+        for i, ln in enumerate(lines):
+            yield {"t": "toast", "text": ln}
+            if delay > 0 and i < len(lines) - 1:
+                yield {"t": "wait", "dur": delay}
+        if extra:
+            yield {"t": "toast", "text": "…还有 %d 行没有显示出来" % extra}
+
+    def _py_env(self):
+        """python 代码块的运行环境。
+
+        `__builtins__` 必须显式塞进去：不塞的话 Python 会把**完整**的内建表
+        自动挂上，open / exec / eval 就全进来了。
+        """
+        builtins = dict(SAFE_BUILTINS)
+        builtins.update(stdlib_api.python_builtins())
+        env = {"__builtins__": builtins}
+        for name, mod in self._lib_modules.items():
+            env[name] = mod          # stmg.python("math") 声明过的，直接按名字用
+        env["STM"] = self.STM
+        env["RAND"] = RAND
+        return env
+
+    def _py_export(self, env):
+        """把代码块里算出来的变量写回剧本，后面 `SET 结果 = 它` 就能读到。
+
+        只搬字符串 / 数字 / 布尔 / 由它们组成的列表字典；模块、函数、类不搬。
+        """
+        keep = (str, int, float, bool, list, dict, tuple, type(None))
+        for key, val in env.items():
+            if not isinstance(key, str) or key.startswith("_"):
+                continue
+            if key in ("STM", "RAND") or key in self._lib_modules:
+                continue
+            if isinstance(val, type):
+                continue
+            if isinstance(val, keep):
+                self.vars[key] = val
 
     # ------------------------------------------------------------------ #
     # 小工具

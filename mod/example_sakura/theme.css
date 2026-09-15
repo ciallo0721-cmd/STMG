@@ -1,0 +1,50 @@
+/* 「樱花飘落」示例美化包 —— 网页版样式。
+   发布为 HTML 时会内联进 index.html，排在引擎样式后面，直接覆盖即可。 */
+
+:root{
+  --accent:#e28ab2;
+  --accent2:#ffc3dd;
+  --sub:#c9a8bb;
+  --panel:rgba(38,22,34,.86);
+  --stroke:rgba(255,214,232,.22);
+  --radius:18px;
+}
+
+body{background:radial-gradient(circle at 50% 18%,#2a1724 0%,#0d070c 70%)}
+
+#dialogue{
+  background:linear-gradient(180deg,rgba(46,26,40,.82),rgba(30,16,26,.92));
+  border:1px solid rgba(255,196,222,.28);
+  box-shadow:0 22px 50px rgba(90,20,60,.45),0 0 0 1px rgba(255,255,255,.04) inset;
+}
+
+#namebox{
+  background:linear-gradient(135deg,#e28ab2,#ffc3dd);
+  letter-spacing:1.4px;
+  box-shadow:0 8px 22px rgba(226,138,178,.45);
+}
+
+#hint{color:#ffc3dd}
+
+#ctrl button{border-color:rgba(255,196,222,.25)}
+#ctrl button:hover{background:rgba(226,138,178,.28)}
+
+#choice-list button{
+  border-radius:18px;
+  border:1px solid rgba(255,196,222,.3);
+  background:linear-gradient(180deg,rgba(58,32,50,.86),rgba(34,18,30,.92));
+}
+#choice-list button:hover{background:linear-gradient(180deg,rgba(96,50,80,.92),rgba(58,28,48,.96))}
+
+#title h1{color:#ffe6f1;text-shadow:0 6px 26px rgba(226,138,178,.6)}
+#title .ver{color:#e5b9cf}
+
+/* 装饰层里的落樱（位置和动画在 theme.js 里控制） */
+.deco-petal{
+  position:absolute;
+  width:10px;height:10px;
+  border-radius:60% 20% 60% 20%;
+  background:linear-gradient(135deg,#ffd7e8,#e28ab2);
+  opacity:.75;
+  will-change:transform;
+}

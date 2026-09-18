@@ -93,6 +93,14 @@ class JumpSignal(Exception):
         self.index = index
 
 
+class ReturnSignal(Exception):
+    """子程序返回（Call / Return 内部用）。
+
+    在子程序体内被 call_sub 的 try 接住；冒泡到 run() 顶层时表示「栈空」，
+    等于结束整个剧本（不崩）。
+    """
+
+
 class Runtime(object):
     def __init__(self, script, options=None, dev_mode=True):
         self.script = script
@@ -114,6 +122,28 @@ class Runtime(object):
         self._replay_i = 0
         self._labels = {s["name"]: i for i, s in enumerate(script.body)
                         if s["k"] == "label"}
+        # 子程序表：标签名 -> 该标签到下一个标签之间的语句列表（Call 时整段执行）
+        self._subs = {}
+        body = self.script.body
+        i = 0
+        while i < len(body):
+            if body[i]["k"] == "label":
+                name = body[i]["name"]
+                j = i + 1
+                sub = []
+                while j < len(body) and body[j]["k"] != "label":
+                    sub.append(body[j])
+                    j += 1
+                self._subs[name] = sub
+                i = j
+            else:
+                i += 1
+        # 副作用回放计数（R.api / stm.os 的序号，仅用于 api_result/os_result 事件的 n 字段）
+        self._api_n = 0
+        self._os_n = 0
+        # 语音自动挂载用的计数：每个角色第几句、全局第几句
+        self._say_char_count = {}
+        self._say_global_count = 0
 
         # 成就系统：已解锁集合（跨会话持久化，按剧本标题区分）。
         # 一开始从存档里读出来；运行中新解锁的会立刻写回。
@@ -192,6 +222,9 @@ class Runtime(object):
                     continue
             if self.script.ending:
                 yield from self.exec_block(self.script.ending)
+        except ReturnSignal:
+            # 顶层的 Return（调用栈空）：直接结束剧本，不跑结尾块
+            pass
         except STMFatal as e:
             yield {"t": "fatal", "message": str(e), "trace": ""}
             return
@@ -208,6 +241,9 @@ class Runtime(object):
             if k == "say":
                 text = self._say_text(s["text"])
                 who = s["who"]
+                # 语音自动挂载：有角色名且开关打开时，先试着找配音，命中就播
+                for vev in self._auto_voice(who):
+                    yield vev
                 ev = {"t": "say", "who": who, "text": text, "line": s["line"]}
                 if who:
                     if who not in self.names:
@@ -275,6 +311,40 @@ class Runtime(object):
             elif k == "label":
                 continue
 
+            elif k == "return":
+                # 子程序返回：冒泡给最近的 Call 接住；到顶层就结束剧本
+                raise ReturnSignal()
+
+            elif k == "call_sub":
+                # 子程序调用：整段执行，遇到 Return 正常返回；找不到标签直接报错
+                sub = self._subs.get(s["name"])
+                if sub is None:
+                    raise STMFatal('Call "%s" 找不到这个子程序标签' % s["name"],
+                                   s["line"])
+                try:
+                    yield from self.exec_block(sub)
+                except ReturnSignal:
+                    pass
+
+            elif k == "repeat":
+                # Repeat N: N 可以是表达式，用 eval_expr 求值；负数/0 一次都不跑
+                try:
+                    count = int(self.eval_expr(s["count"]))
+                except STMFatal:
+                    count = 0
+                for _ in range(max(0, count)):
+                    yield from self.exec_block(s["body"])
+
+            elif k == "while":
+                # While 条件: 每次循环前重新求值；硬上限 10000 次防死循环
+                guard = 0
+                while self.eval_cond(s["cond"]):
+                    guard += 1
+                    if guard > 10000:
+                        raise STMFatal(
+                            "While 循环超过 10000 次，可能写成了死循环", s["line"])
+                    yield from self.exec_block(s["body"])
+
             elif k == "call":
                 yield from self.do_call(s)
 
@@ -318,14 +388,30 @@ class Runtime(object):
                 # 和 Ren'Py 的 scene 一样：换背景会先把立绘清空
                 p = self.resolve(a0)
                 self._unlock_cg(p)
-                yield {"t": "bg", "path": p, "clear": True}
+                ev = {"t": "bg", "path": p, "clear": True}
+                d = self._dur(kw)
+                if d is not None:
+                    ev["dur"] = d
+                yield ev
             elif method == "picture":
                 p = self.resolve(a0)
                 self._unlock_cg(p)
-                yield {"t": "picture", "path": p}
+                ev = {"t": "picture", "path": p}
+                d = self._dur(kw)
+                if d is not None:
+                    ev["dur"] = d
+                yield ev
             elif method == "play":
                 loop = str(kw.get("loop", "true")).lower() not in ("false", "0", "no")
-                yield {"t": "bgm", "path": self.resolve(a0), "loop": loop}
+                # 路径含逗号 -> 拆成多首依次播放（S.play("a.mp3,b.mp3")）；
+                # 只拆出一个就和老行为一致，和 T5 的 apply 幂等。
+                if "," in a0:
+                    for pp in a0.split(","):
+                        pp = pp.strip()
+                        if pp:
+                            yield {"t": "bgm", "path": self.resolve(pp), "loop": loop}
+                else:
+                    yield {"t": "bgm", "path": self.resolve(a0), "loop": loop}
             elif method == "sound":
                 yield {"t": "se", "path": self.resolve(a0)}
             elif method == "voice":
@@ -380,9 +466,23 @@ class Runtime(object):
                 if not self.dev_mode and not self.options.get("allow_net", True):
                     yield {"t": "toast", "text": "发布版已关闭联网，R.api 被忽略"}
                     return
+                # 回放：有对应 api 记录就短路，不真发请求（老存档没有则现场真执行）
+                rec = self._take_record("api")
+                if rec is not None:
+                    result = rec.get("result")
+                    self.STM.API = result
+                    self.vars["R"].RESULT = result
+                    yield {"t": "api_result", "ok": bool(rec.get("ok", False)),
+                           "result": result, "n": rec.get("n", 0)}
+                    return
                 ok, result = stdlib_api.call_api(kw.get("url", a0), key=key)
                 self.STM.API = result
                 self.vars["R"].RESULT = result
+                self._api_n += 1
+                # 记进 answers 流，存档重放时就能短路、不重发请求
+                self.answers.append(("api", {"url": kw.get("url", a0), "key": key,
+                                             "ok": ok, "result": result,
+                                             "n": self._api_n}))
                 yield {"t": "toast",
                        "text": "R.api %s：%s" % ("成功" if ok else "失败",
                                                 str(result)[:60])}
@@ -404,30 +504,54 @@ class Runtime(object):
         # 绝对路径直接用；相对路径按项目根目录解析
         p = path if os.path.isabs(path) else self.resolve(path)
 
+        # 回放：有对应 os 记录就短路，不真碰玩家磁盘（老存档没有则现场真执行）
+        rec = self._take_record("os")
+        if rec is not None:
+            ok = bool(rec.get("ok", False))
+            content = rec.get("content", "")
+            if op == "read":
+                self.STM.OS = content
+                self.vars["STM.OS"] = content
+            yield {"t": "os_result", "ok": ok, "op": op, "path": p,
+                   "content": content, "n": rec.get("n", 0)}
+            return
+
         if op == "read":
             ok, content = stmos.read_file(p)
             self.STM.OS = content if ok else ""
             self.vars["STM.OS"] = self.STM.OS
             if not ok and self.dev_mode:
                 yield {"t": "toast", "text": "stm.os read 失败：%s" % p}
+            self._os_n += 1
+            self.answers.append(("os", {"op": op, "path": p, "ok": ok,
+                                        "content": content, "n": self._os_n}))
             return
 
         if op == "create":
             ok, msg = stmos.create_file(p)
             if not ok and self.dev_mode:
                 yield {"t": "toast", "text": "stm.os create：%s" % msg}
+            self._os_n += 1
+            self.answers.append(("os", {"op": op, "path": p, "ok": ok,
+                                        "content": "", "n": self._os_n}))
             return
 
         if op == "remove":
             ok, msg = stmos.remove_file(p)
             if not ok and self.dev_mode:
                 yield {"t": "toast", "text": "stm.os remove：%s" % msg}
+            self._os_n += 1
+            self.answers.append(("os", {"op": op, "path": p, "ok": ok,
+                                        "content": "", "n": self._os_n}))
             return
 
         if op == "revision":
             ok, msg = stmos.revision_file(p, s.get("find"), s.get("replace"))
             if not ok and self.dev_mode:
                 yield {"t": "toast", "text": "stm.os revision：%s" % msg}
+            self._os_n += 1
+            self.answers.append(("os", {"op": op, "path": p, "ok": ok,
+                                        "content": "", "n": self._os_n}))
             return
 
     def do_pyblock(self, s):
@@ -553,6 +677,10 @@ class Runtime(object):
                     ev[key] = val
         if "expr" in kwargs:
             ev["expr"] = kwargs["expr"] or ""
+        # 补间时长：只有写了 dur= 才带上，没写就瞬切（老脚本行为不变）
+        d = self._dur(kwargs)
+        if d is not None:
+            ev["dur"] = d
         return [ev]
 
     def _say_text(self, raw):
@@ -595,6 +723,59 @@ class Runtime(object):
             self._replay_i += 1
             self.answers.append((kind, val))
             return val
+        return None
+
+    def _take_record(self, kind):
+        """从回放流里按类型取一条记录（R.api / stm.os 用）。
+
+        命中返回记录字典并推进回放指针（重放出的新存档里仍含这条，可继续重放）；
+        不命中（当前记录是别的类型，或流已读完）返回 None，表示要「现场真执行」。
+        老存档里没有 api/os 记录时，这里必然不命中，于是退回真执行、
+        **不会越界吞掉后面的 choose/question 记录**——和 _rand_draw 同款兼容写法。
+        """
+        if self._replay_i < len(self._replay):
+            k, val = self._replay[self._replay_i]
+            if k == kind:
+                self._replay_i += 1
+                self.answers.append((k, val))
+                return val
+        return None
+
+    def _auto_voice(self, who):
+        """语音自动挂载：有角色名且 AutoVoice 打开时，按命名约定找配音文件。
+
+        命名约定（按顺序尝试，命中即播，找不到静默跳过，不许报错）：
+            voice/<角色名>/<该角色第几句 4 位补零>.wav|.ogg|.mp3
+            voice/<角色名>/<全局台词序号 4 位补零>.wav|.ogg|.mp3
+        quiet（读档重放）时不产出，避免读档疯狂播配音。
+        产出的事件带 auto=True、tag=角色名，供「重听」定位。
+        """
+        if self.quiet:
+            return
+        if not who:
+            return
+        if not self.options or not self.options.get("autovoice"):
+            return
+        self._say_global_count += 1
+        self._say_char_count[who] = self._say_char_count.get(who, 0) + 1
+        vdir = (self.options.get("voicedir") or "voice").replace("\\", "/")
+        idx_char = self._say_char_count[who]
+        idx_global = self._say_global_count
+        exts = (".wav", ".ogg", ".mp3")
+        for idx in (idx_char, idx_global):
+            for ext in exts:
+                cand = os.path.join(self.root, vdir, who, "%04d%s" % (idx, ext))
+                if os.path.isfile(cand):
+                    yield {"t": "voice", "path": cand, "auto": True, "tag": who}
+                    return
+
+    def _dur(self, kw):
+        """从 kwargs 里取补间时长 dur（秒），取不到或写错就返回 None（老行为）。"""
+        if "dur" in kw and kw["dur"] is not None:
+            try:
+                return float(kw["dur"])
+            except (TypeError, ValueError):
+                return None
         return None
 
     def _unlock_cg(self, path):

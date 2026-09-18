@@ -31,4 +31,5 @@ stmg/pyodide/
 
 # 临时测试
 _tmptest/
+_devtest/
 *.bak

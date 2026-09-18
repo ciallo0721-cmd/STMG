@@ -446,6 +446,38 @@ def draw_transition(surface, kind, progress, w, h, color=(16, 16, 22), prev=None
         surface.blit(mask, (0, 0))
 
 
+def lerp(a, b, p):
+    """线性插值：p=0 取 a，p=1 取 b。补间动画的核心，纯函数好做单测。"""
+    return a + (b - a) * p
+
+
+def tween_sprite(fr, to, p, sprite_x, scale_default=1.0):
+    """按进度 p(0~1) 把立绘的 from/to 插值成一张可绘制的 item dict。
+
+    fr/to 都是 scene["sprites"][tag] 那样的字典（含 pos/scale/alpha/y/rotate）。
+    返回的新 item 里用 `_xfrac` 表达插值后的水平位置（draw_sprite 用 cx 入参接）。
+    纯函数，方便单测；gui 的 draw_scene 直接调它。
+    """
+    item = dict(to)
+    sfr = fr.get("scale")
+    sto = to.get("scale")
+    if sfr is None:
+        sfr = scale_default
+    if sto is None:
+        sto = scale_default
+    item["scale"] = lerp(sfr, sto, p)
+    afr = fr.get("alpha") if fr.get("alpha") is not None else 255
+    ato = to.get("alpha") if to.get("alpha") is not None else 255
+    item["alpha"] = lerp(afr, ato, p)
+    item["y"] = lerp(float(fr.get("y") or 0.0), float(to.get("y") or 0.0), p)
+    item["rotate"] = lerp(float(fr.get("rotate") or 0.0),
+                          float(to.get("rotate") or 0.0), p)
+    xfr = sprite_x.get(fr.get("pos", "center"), 0.5)
+    xto = sprite_x.get(to.get("pos", "center"), 0.5)
+    item["_xfrac"] = lerp(xfr, xto, p)
+    return item
+
+
 def md(text):
     # 走模块属性而不是直接引用函数，这样项目的 custom/markdown.py
     # 覆盖过 markdown.render 之后能立刻生效。

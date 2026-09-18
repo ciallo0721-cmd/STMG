@@ -56,17 +56,19 @@ STM2RPY = os.path.join(HERE, "tools", "stm2renpy.py")
 MODCHECK = os.path.join(HERE, "tools", "modcheck.py")
 MODPUB = os.path.join(HERE, "tools", "modpub.py")
 
-ACCENT = "#5b7cfa"
-ACCENT_HOVER = "#4169e1"
-DANGER = "#c0483f"
-CARD = ("#ffffff", "#1b1e28")
-BG = ("#eef1f7", "#14161d")
-INK = ("#1d2030", "#e9ecf5")
-SUB = ("#6b7285", "#98a0b8")
-BORDER = ("#c9cede", "#333849")
-HOVER = ("#e8ebf3", "#232735")
-LOG_BG = "#11131a"
-LOG_FG = "#cfd6e6"
+ACCENT = "#0066cc"          # Apple Action Blue
+ACCENT_HOVER = "#0077ed"
+DANGER = "#d8392f"
+CARD = ("#ffffff", "#1c1c1e")
+BG = ("#f5f5f7", "#000000")
+INK = ("#1d1d1f", "#f5f5f7")
+SUB = ("#6e6e73", "#98989d")
+BORDER = ("#d2d2d7", "#38383a")
+HOVER = ("#e8e8ed", "#2c2c2e")
+SEL_BG = ("#eaf1fc", "#0a3b78")   # Apple 风列表选中：浅蓝底（深色下深蓝）
+SEL_FG = (ACCENT, "#ffffff")
+LOG_BG = "#1c1c1e"
+LOG_FG = "#d1d1d6"
 
 
 class Launcher(ctk.CTk):
@@ -123,9 +125,23 @@ class Launcher(ctk.CTk):
         ctk.CTkLabel(left, text="Super Text Markdown Galgame", font=self.f(12),
                      text_color=SUB).pack(side="left", padx=(10, 0), pady=(8, 0))
 
-        self.mode_menu = ctk.CTkOptionMenu(head, values=["跟随系统", "浅色", "深色"],
-                                           width=112, height=30, font=self.f(12),
-                                           command=self.on_mode)
+        # 这套控件库（含某些魔改/旧版本）的 CTkSegmentedButton 不一定提供
+        # selected/unselected_text_color 细分文字色参数，只有统一的 text_color。
+        # 直接用构造函数签名判断，比依赖版本号更稳（6.0.0 魔改版会误判）。
+        import inspect
+        _sig = inspect.signature(ctk.CTkSegmentedButton.__init__)
+        seg_kw = dict(selected_color=ACCENT,
+                      selected_hover_color=ACCENT_HOVER,
+                      unselected_color="#e8e8ed",
+                      command=self.on_mode)
+        if "unselected_text_color" in _sig.parameters:
+            seg_kw["selected_text_color"] = "white"
+            seg_kw["unselected_text_color"] = INK
+        else:
+            seg_kw["text_color"] = INK
+        self.mode_menu = ctk.CTkSegmentedButton(head, values=["跟随系统", "浅色", "深色"],
+                                                height=30, font=self.f(12),
+                                                **seg_kw)
         self.mode_menu.set("跟随系统")
         self.mode_menu.grid(row=0, column=1, sticky="e")
 
@@ -167,50 +183,63 @@ class Launcher(ctk.CTk):
                                      anchor="w")
         self.lbl_meta.grid(row=2, column=0, sticky="ew", padx=20, pady=(2, 14))
 
-        ctk.CTkButton(right, text="启动游戏", height=46, corner_radius=12,
+        ctk.CTkButton(right, text="启动游戏", height=46, corner_radius=9999,
                       font=self.f(15, True), fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=self.run_game).grid(row=3, column=0, sticky="ew",
                                                   padx=20, pady=(0, 12))
 
-        grid = ctk.CTkFrame(right, fg_color="transparent")
-        grid.grid(row=4, column=0, sticky="ew", padx=20)
-        for c in range(3):
-            grid.grid_columnconfigure(c, weight=1, uniform="btn")
-        acts = [
-            ("语法检查", self.run_check, False),
-            ("无头试跑", self.run_auto, False),
-            ("编辑剧本", self.edit_script, False),
-            ("可视化编辑", self.visual_edit, False),
-            ("打包发布", self.run_pack, False),
-            ("发布为 HTML", self.run_html, True),
-            ("转为 Ren'Py", self.run_stm2renpy, True),
-            ("美化包", self.run_mods, False),
-            ("打开文件夹", self.open_folder, False),
-            ("内嵌引擎", self.embed_engine, False),
-            ("清空日志", self.clear_log, False),
-            ("移除项目", self.remove_project, False),
-        ]
-        for i, (text, fn, hot) in enumerate(acts):
-            danger = text == "移除项目"
-            if hot and not danger:
-                fg, bw, border, tc, hv = ACCENT, 0, ACCENT, "#ffffff", ACCENT_HOVER
-            elif danger:
-                fg, bw, border, tc, hv = "transparent", 1, DANGER, DANGER, ("#f7e5e3", "#3a2320")
-            else:
-                fg, bw, border, tc, hv = "transparent", 1, BORDER, INK, HOVER
-            ctk.CTkButton(grid, text=text, height=38, corner_radius=10,
-                          font=self.f(12.5), fg_color=fg, border_width=bw,
-                          border_color=border, text_color=tc, hover_color=hv,
-                          command=fn).grid(row=i // 3, column=i % 3, sticky="ew",
-                                           padx=5, pady=5)
+        # 操作区分组（开发 / 发布 / 管理）—— 简洁 + 方便
+        sec = ctk.CTkFrame(right, fg_color="transparent")
+        sec.grid(row=4, column=0, sticky="ew", padx=20, pady=(2, 4))
+        sec.grid_columnconfigure(0, weight=1)
+
+        def section(parent, title, items, hero=None):
+            lab = ctk.CTkLabel(parent, text=title, font=self.f(11, True),
+                              text_color=SUB, anchor="w")
+            lab.pack(anchor="w", pady=(10, 4))
+            g = ctk.CTkFrame(parent, fg_color="transparent")
+            g.pack(fill="x")
+            g.grid_columnconfigure(0, weight=1)
+            g.grid_columnconfigure(1, weight=1)
+            for i, (text, fn) in enumerate(items):
+                danger = text == "移除项目"
+                if text == hero:
+                    fg, bw, border, tc, hv = ACCENT, 0, ACCENT, "#ffffff", ACCENT_HOVER
+                elif danger:
+                    fg, bw, border, tc, hv = "transparent", 1, DANGER, DANGER, ("#f7e5e3", "#3a2320")
+                else:
+                    fg, bw, border, tc, hv = "transparent", 1, BORDER, INK, HOVER
+                ctk.CTkButton(g, text=text, height=36, corner_radius=9999,
+                              font=self.f(12.5), fg_color=fg, border_width=bw,
+                              border_color=border, text_color=tc, hover_color=hv,
+                              command=fn).grid(row=i // 2, column=i % 2,
+                                               sticky="ew", padx=4, pady=4)
+
+        section(sec, "开发", [
+            ("语法检查", self.run_check),
+            ("无头试跑", self.run_auto),
+            ("编辑剧本", self.edit_script),
+            ("可视化编辑", self.visual_edit),
+            ("美化包", self.run_mods),
+        ])
+        section(sec, "发布", [
+            ("打包发布", self.run_pack),
+            ("发布为 HTML", self.run_html),
+            ("转为 Ren'Py", self.run_stm2renpy),
+        ], hero="转为 Ren'Py")
+        section(sec, "管理", [
+            ("打开文件夹", self.open_folder),
+            ("内嵌引擎", self.embed_engine),
+            ("清空日志", self.clear_log),
+            ("移除项目", self.remove_project),
+        ])
 
         ctk.CTkLabel(right,
-                     text="内嵌引擎 —— 把 stmg/ 拷进项目，项目完全开放，改项目里的 stmg/*.py 即可自定义\n"
-                          "美化包　 —— 换外观（对话框 / 配色 / 网页样式），不含引擎、不改引擎\n"
+                     text="内嵌引擎 —— 把 stmg/ 拷进项目，项目完全开放，可改 stmg/*.py 自定义\n"
                           "发布为 HTML —— 生成能直接双击 / 丢上网页的版本\n"
-                          "转为 Ren'Py —— 把剧本转成 .rpy，产物在 dist/<项目名>_renpy/",
+                          "转为 Ren'Py —— 把剧本转成 .rpy，产物在 dist/<项目名>_renpy/（已置顶强调）",
                      font=self.f(11), text_color=SUB, anchor="w", justify="left"
-                     ).grid(row=5, column=0, sticky="ew", padx=20, pady=(12, 16))
+                     ).grid(row=5, column=0, sticky="ew", padx=20, pady=(8, 16))
 
         # ---------- 下：日志 ----------
         bottom = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
@@ -269,8 +298,8 @@ class Launcher(ctk.CTk):
         self.current = p
         for k, b in self._rows.items():
             if os.path.normcase(p["path"]) == k:
-                b.configure(fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                            text_color="#ffffff")
+                b.configure(fg_color=SEL_BG, hover_color=SEL_BG,
+                            text_color=SEL_FG)
             else:
                 b.configure(fg_color="transparent", hover_color=HOVER, text_color=INK)
         self.lbl_title.configure(text=p["title"] or p["name"])
@@ -597,6 +626,129 @@ def _classify_line(line):
     return "其它"
 
 
+# --------------------------------------------------------------------------- #
+# T4 辅助函数（编辑器「实时预览」与「素材面板」用，独立成模块级函数方便单测）
+# --------------------------------------------------------------------------- #
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+_AUD_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac"}
+
+
+def preview_engine_path(proj_dir, root_dir):
+    """找引擎入口：优先项目内嵌的 <项目>/start.py，否则退回启动器根目录的 start.py。"""
+    p = os.path.join(proj_dir, "start.py")
+    if os.path.isfile(p):
+        return os.path.abspath(p)
+    return os.path.abspath(os.path.join(root_dir, "start.py"))
+
+
+def build_preview_command(proj_dir, script_path):
+    """拼预览进程的命令行：python <引擎start.py> <预览剧本>。"""
+    engine = preview_engine_path(proj_dir, HERE)
+    return [sys.executable, engine, os.path.abspath(script_path)]
+
+
+def asset_insert_snippet(rel_path):
+    """按素材所在目录 / 扩展名决定双击插入的调用。
+
+    bg 目录 -> S.cg；png 目录 -> S.character；音频 -> S.play；其它图片 -> S.picture。
+    路径统一用正斜杠，相对项目根目录。
+    """
+    rel = rel_path.replace("\\", "/")
+    top = rel.split("/", 1)[0].lower()
+    ext = os.path.splitext(rel)[1].lower()
+    if top == "bg":
+        return 'S.cg("%s")' % rel
+    if top == "png":
+        return 'S.character("%s")' % rel
+    if ext in _AUD_EXTS:
+        return 'S.play("%s")' % rel
+    if ext in _IMG_EXTS:
+        return 'S.picture("%s")' % rel
+    return 'S.cg("%s")' % rel
+
+
+# 匹配 S.方法( 这种素材调用起点；括号匹配只数圆括号（STMG 的 {} [] 是排版标记）
+_ASSET_CALL_RE = re.compile(
+    r'\bS\.(cg|bg|background|picture|character|play|sound|voice)\s*\(', re.I)
+
+
+def _match_paren(text, i):
+    depth = 0
+    while i < len(text):
+        c = text[i]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(text)
+
+
+def scan_asset_refs(text):
+    """扫一遍剧本文本，返回被引用的素材：(method, path, is_dynamic)。
+
+    路径里若含 + ( ) STM. R. [ 等表达式拼接 -> 归为「动态路径」，不判缺失。
+    角色名注册（无路径、无扩展名）不算素材文件引用。
+    """
+    out = []
+    for m in _ASSET_CALL_RE.finditer(text):
+        method = m.group(1).lower()
+        j = _match_paren(text, m.end() - 1)
+        args = text[m.end():j]
+        sm = re.search(r'(["\'])(.*?)\1', args, re.S)
+        if not sm:
+            continue
+        path = sm.group(2)
+        if not path:
+            continue
+        if "/" not in path and "\\" not in path \
+                and os.path.splitext(path)[1].lower() not in (_IMG_EXTS | _AUD_EXTS):
+            continue
+        is_dynamic = ('+' in args) or ('(' in args) or ('STM' in args) \
+            or ('R.' in args) or ('[' in args)
+        out.append((method, path, is_dynamic))
+    return out
+
+
+def collect_missing(text, game_dir):
+    """统计缺失素材。返回 (missing_list, dynamic_count)。
+
+    missing_list 元素为 (method, path)（纯静态且文件不存在的）。
+    """
+    refs = scan_asset_refs(text)
+    missing, dyn, seen = [], 0, set()
+    for method, path, is_dynamic in refs:
+        if is_dynamic:
+            dyn += 1
+            continue
+        key = (method, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not os.path.isfile(os.path.join(game_dir, path)):
+            missing.append((method, path))
+    return missing, dyn
+
+
+def list_asset_dir(base_dir):
+    """列出一个素材目录下的子目录与文件（跳过 . 和 _ 开头的隐藏项）。"""
+    dirs, files = [], []
+    try:
+        for name in sorted(os.listdir(base_dir)):
+            if name.startswith(".") or name.startswith("_"):
+                continue
+            full = os.path.join(base_dir, name)
+            if os.path.isdir(full):
+                dirs.append(name)
+            else:
+                files.append(name)
+    except OSError:
+        pass
+    return dirs, files
+
+
 class BaseDialog(ctk.CTkToplevel):
     def __init__(self, master, title, w=420, h=260):
         # 禁用 CTk 的 Windows 标题栏 withdraw 杂技（会把窗口藏起来不还）
@@ -642,6 +794,7 @@ class VisualEditor(BaseDialog):
         self.lines = []
         self.mode = "line"          # line=行级 / blocks=积木 / code=半代码
         self._blk_sel = None        # 积木模式下选中的块下标
+        self._preview_proc = None   # 预览进程句柄（同一时刻只允许一个）
         self.app.log_line("可视化编辑：①窗口基座 OK")
         self.resizable(True, True)
         self._build_ui()
@@ -673,7 +826,9 @@ class VisualEditor(BaseDialog):
         top.pack(fill="x", padx=14, pady=(12, 6))
         ctk.CTkLabel(top, text=self.path, font=app.f(12), text_color=SUB
                      ).pack(side="left")
-        for text, fn, hot in [("保存", self.do_save, True),
+        # 右侧操作按钮：预览 / 保存 / 语法检查 / 刷新
+        for text, fn, hot in [("预览", self.run_preview, True),
+                              ("保存", self.do_save, True),
                               ("语法检查", self.do_check, False),
                               ("刷新", self.reload_file, False)]:
             ctk.CTkButton(top, text=text, width=84, height=32, corner_radius=9,
@@ -694,6 +849,17 @@ class VisualEditor(BaseDialog):
                           command=lambda m=m: self._set_mode(m)
                           ).pack(side="right", padx=(6, 0))
 
+        # 主区域：左=素材面板，右=模式内容（行级 / 积木 / 半代码）
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        main.grid_columnconfigure(0, weight=0, minsize=200)
+        main.grid_columnconfigure(1, weight=1)
+        main.grid_rowconfigure(0, weight=1)
+        self._build_asset_panel(main)
+        host = ctk.CTkFrame(main, fg_color="transparent")
+        host.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self._body_host = host
+
         if self.mode == "blocks":
             self._build_block_body()
         elif self.mode == "code":
@@ -703,7 +869,7 @@ class VisualEditor(BaseDialog):
 
     def _build_line_body(self):
         app = self.app
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        body = ctk.CTkFrame(self._body_host, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
         body.grid_columnconfigure(0, weight=3)
         body.grid_columnconfigure(1, weight=2)
@@ -772,6 +938,8 @@ class VisualEditor(BaseDialog):
     def _safe_destroy(self, ev=None):
         if ev is not None and ev.widget is not self:
             return      # 子组件销毁也会冒泡，只在自己销毁时处理
+        # 关编辑器时务必杀掉预览进程，绝不留下孤儿进程
+        self._kill_preview()
         try:
             self.grab_release()
         except Exception:                              # noqa: BLE001
@@ -780,6 +948,219 @@ class VisualEditor(BaseDialog):
             self.app.log_line("可视化编辑：窗口已关闭")
         except Exception:                              # noqa: BLE001
             pass
+
+    # ------------------------------------------------------------------ #
+    # 实时预览（#3）：把当前缓冲区写成临时剧本，拉起引擎；只许一个预览进程
+    # ------------------------------------------------------------------ #
+    def run_preview(self):
+        """把当前缓冲区写成 <项目>/.stmg_save/_preview.stm，拉起引擎预览。"""
+        try:
+            text = self._current_buffer_text()
+        except Exception as e:                         # noqa: BLE001
+            self.app.log_line("预览失败：取缓冲区出错 %s" % e)
+            return
+        game_dir = os.path.dirname(self.path)
+        save_dir = os.path.join(game_dir, ".stmg_save")
+        try:
+            os.makedirs(save_dir, exist_ok=True)
+        except OSError as e:                           # noqa: BLE001
+            self.app.log_line("预览失败：建目录出错 %s" % e)
+            return
+        preview_path = os.path.join(save_dir, "_preview.stm")
+        try:
+            with open(preview_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError as e:                           # noqa: BLE001
+            self.app.log_line("预览失败：写临时剧本出错 %s" % e)
+            return
+
+        # 只保留一个预览进程：先关掉旧的
+        self._kill_preview()
+        cmd = build_preview_command(game_dir, preview_path)
+        try:
+            disp = " ".join('"%s"' % c if " " in c else c for c in cmd)
+            self.app.log_line("预览启动：%s" % disp)
+            self._preview_proc = subprocess.Popen(cmd)
+        except Exception as e:                         # noqa: BLE001
+            # 找不到 python / 引擎报错都只进日志，绝不弹栈
+            self.app.log_line("预览启动失败：%s" % e)
+
+    def _kill_preview(self):
+        """终止预览进程：terminate + 超时 wait 兜底 kill，绝不留孤儿。"""
+        proc = getattr(self, "_preview_proc", None)
+        if proc is None:
+            return
+        self._preview_proc = None
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:                  # noqa: BLE001
+                        pass
+        except Exception as e:                         # noqa: BLE001
+            self.app.log_line("预览进程清理出错：%s" % e)
+
+    def _current_buffer_text(self):
+        """拿到「当前编辑器缓冲区」的完整文本（按模式取最新内容）。"""
+        if self.mode == "blocks":
+            # 积木模式先把树写回行，保证缓冲区最新
+            if getattr(self, "_tree", None):
+                try:
+                    self._blk_sync_back()
+                except Exception:                      # noqa: BLE001
+                    pass
+            return "\n".join(self.lines)
+        if self.mode == "code" and getattr(self, "code_box", None):
+            return self.code_box.get("1.0", "end")
+        return "\n".join(self.lines)
+
+    # ------------------------------------------------------------------ #
+    # 素材面板（#4）：左树按 ASSET_DIRS 分类、懒加载子目录，双击插入调用
+    # ------------------------------------------------------------------ #
+    def _build_asset_panel(self, parent):
+        from tkinter import ttk
+        app = self.app
+        frame = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=12)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.grid_rowconfigure(1, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+
+        head = ctk.CTkFrame(frame, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
+        head.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(head, text="素材库", font=app.f(13, True),
+                     text_color=INK, anchor="w").grid(row=0, column=0, sticky="w")
+        self._asset_missing_lbl = ctk.CTkLabel(
+            head, text="缺失：0", font=app.f(11), text_color=SUB,
+            anchor="e", cursor="hand2")
+        self._asset_missing_lbl.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self._asset_missing_lbl.bind("<Button-1>", lambda e: self._log_missing())
+
+        tree = ttk.Treeview(frame, show="tree", selectmode="browse")
+        tree.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        vsb.grid(row=1, column=1, sticky="ns", pady=(0, 4))
+        tree.configure(yscrollcommand=vsb.set)
+        self._asset_tree = tree
+        self._asset_paths = {}        # iid -> (abspath, rel路径, 是否目录)
+        self._last_missing = []
+        tree.bind("<<TreeviewOpen>>", self._on_asset_open)
+        tree.bind("<Double-1>", self._on_asset_double)
+        self._populate_asset_roots()
+        self._refresh_missing_count()
+        return frame
+
+    def _populate_asset_roots(self):
+        """素材树根：按 stmg.project.ASSET_DIRS 分类（bg / png / music / gui / custom）。"""
+        tree = self._asset_tree
+        tree.delete(*tree.get_children())
+        self._asset_paths.clear()
+        game_dir = os.path.dirname(self.path)
+        for cat in proj.ASSET_DIRS:
+            base = os.path.join(game_dir, cat)
+            iid = "cat:" + cat
+            self._asset_paths[iid] = (base, cat, True)
+            tree.insert("", "end", iid=iid, text=cat, open=False)
+
+    def _on_asset_open(self, _e=None):
+        iid = self._asset_tree.focus()
+        if iid:
+            self._expand_asset_node(iid)
+
+    def _expand_asset_node(self, iid):
+        """懒加载：第一次展开某目录时才 listdir 它的子项（子目录同样懒加载）。"""
+        tree = self._asset_tree
+        info = self._asset_paths.get(iid)
+        if not info or not info[2]:
+            return
+        if tree.get_children(iid):        # 已加载过就不再列
+            return
+        base, rel = info[0], info[1]
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return
+        for name in names:
+            if name.startswith(".") or name.startswith("_"):
+                continue
+            full = os.path.join(base, name)
+            child_rel = (rel + "/" + name).replace("\\", "/")
+            is_dir = os.path.isdir(full)
+            ciid = iid + "/" + name
+            self._asset_paths[ciid] = (full, child_rel, is_dir)
+            tree.insert(iid, "end", iid=ciid, text=name)
+
+    def _on_asset_double(self, _e=None):
+        iid = self._asset_tree.focus()
+        if not iid:
+            return
+        info = self._asset_paths.get(iid)
+        if not info or info[2]:           # 目录不插入
+            return
+        self._asset_insert(info[1])
+
+    def _asset_insert(self, rel):
+        """按素材类型在光标处插入对应调用（行级/半代码插文本框，积木插缓冲区）。"""
+        snippet = asset_insert_snippet(rel)
+        if self.mode == "code" and getattr(self, "code_box", None):
+            self._insert_into(self.code_box, snippet + "\n")
+        elif getattr(self, "entry", None):
+            self._insert_into(self.entry, snippet + "\n")
+        elif self.mode == "blocks":
+            self._insert_into_lines(snippet)
+        else:
+            self.app.log_line("素材插入：没有可插入的文本框")
+
+    def _insert_into(self, widget, text):
+        try:
+            widget.insert(widget.index("insert"), text)
+            self.app.log_line("已插入素材调用：%s" % text.strip())
+        except Exception as e:             # noqa: BLE001
+            self.app.log_line("素材插入失败：%s" % e)
+
+    def _insert_into_lines(self, snippet):
+        """积木模式下把素材调用追加到正文段末尾，再重解析树。"""
+        try:
+            _h, body, _e = self._find_secs()
+            pos = body[1] if body else len(self.lines)
+            self.lines.insert(pos, snippet)
+            self._tree_from_lines()
+            self._canvas_render()
+            self.app.log_line("已插入素材调用：%s" % snippet)
+        except Exception as e:             # noqa: BLE001
+            self.app.log_line("素材插入失败：%s" % e)
+
+    def _refresh_missing_count(self):
+        """顶部「缺失素材」计数：扫当前缓冲区里 S.* 路径，统计静态缺失项。"""
+        try:
+            text = self._current_buffer_text()
+        except Exception:                  # noqa: BLE001
+            text = ""
+        missing, _dyn = collect_missing(text, os.path.dirname(self.path))
+        self._last_missing = missing
+        lbl = getattr(self, "_asset_missing_lbl", None)
+        if lbl:
+            lbl.configure(text="缺失：%d" % len(missing))
+
+    def _log_missing(self):
+        """点「缺失」计数：把缺失清单打进主窗口日志区。"""
+        missing = getattr(self, "_last_missing", None)
+        if missing is None:
+            self._refresh_missing_count()
+            missing = getattr(self, "_last_missing", [])
+        if not missing:
+            self.app.log_line("素材缺失：没有发现缺失的静态素材路径。")
+            return
+        self.app.log_line("素材缺失清单（共 %d 项，相对项目根目录）：" % len(missing))
+        for method, path in missing[:40]:
+            self.app.log_line("  [%s] %s" % (method, path))
+        if len(missing) > 40:
+            self.app.log_line("  ... 还有 %d 项" % (len(missing) - 40))
 
     # ---- 文件 ---- #
     def reload_file(self):
@@ -800,6 +1181,12 @@ class VisualEditor(BaseDialog):
         else:
             self.refresh_list(0)
             self.app.log_line("可视化编辑：③已加载 %d 行" % len(self.lines))
+        # 文件加载后刷新素材面板的「缺失」计数
+        if getattr(self, "_asset_tree", None) is not None:
+            try:
+                self._refresh_missing_count()
+            except Exception:                      # noqa: BLE001
+                pass
 
     def refresh_list(self, keep=0):
         self.listbox.delete(0, tk.END)
@@ -991,7 +1378,7 @@ class VisualEditor(BaseDialog):
 
     def _build_block_body(self):
         app = self.app
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        body = ctk.CTkFrame(self._body_host, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
         body.grid_columnconfigure(0, weight=0)
         body.grid_columnconfigure(1, weight=1)
@@ -1750,7 +2137,7 @@ class VisualEditor(BaseDialog):
     # ------------------------------------------------------------------ #
     def _build_code_body(self):
         app = self.app
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        body = ctk.CTkFrame(self._body_host, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(0, weight=1)
@@ -2059,7 +2446,7 @@ class ModDialog(BaseDialog):
                 text="%s%s　%s　v%s　by %s%s" % (star, p["id"], p["name"], p["version"],
                                                 p["author"], tag),
                 anchor="w", height=40, corner_radius=9, font=self.app.f(12),
-                fg_color=ACCENT if on else ("transparent", "#232733"),
+                fg_color=ACCENT if on else (CARD[0], "#232733"),
                 text_color="#ffffff" if on else INK,
                 hover_color=ACCENT_HOVER if on else HOVER,
                 command=lambda mid=p["id"]: self._select(mid),

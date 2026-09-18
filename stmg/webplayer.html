@@ -208,6 +208,15 @@ __STMG_THEME_CSS__
         <button id="t-load">读取存档</button>
         <button id="t-cfg">设置</button>
       </div>
+      <div class="notice">
+        <p><b>关于联网</b>（剧本里的 <code>R.api</code>）：网页版没有服务器替你保管密钥，
+          剧本里填的 API Key <b>必然可见</b>——任何人打开网页源码都读得到；跨域请求还需要
+          对方接口主动允许 CORS。请求超过 <b>__STMG_API_SEC__ 秒</b>没回来就放弃，
+          <code>STM.API</code> 留空，剧情照常往下走。</p>
+        <p><b>关于文件</b>（剧本里的 <code>stm.os</code>）：网页版的文件操作只发生在
+          浏览器沙箱里，碰不到你真实的磁盘。沙箱是浏览器自己的 IndexedDB，
+          换浏览器、换设备或者清空站点数据就没了。</p>
+      </div>
     </div>
     <div id="engine-state"></div>
     <pre id="engine-error" style="display:none"></pre>
@@ -304,6 +313,12 @@ const PY_SRC = __STMG_PY__;                 // {虚拟路径: 源码}
 const SCRIPT_TEXT = __STMG_SCRIPT__;        // 剧本原文（wasm 模式用）
 const OPTIONS_TEXT = __STMG_OPTIONS__;
 
+/* R.api 的联网超时（毫秒）。浏览器里没法同步等，所以每一次请求都限时，
+   超了就放弃这次请求、剧情照常往下走（STM.API 是空的）。契约要求 10 秒。 */
+const API_TIMEOUT_MS = __STMG_API_TIMEOUT__;
+const API_FAIL_TEXT = "网页版联网没成功（超时 / 被跨域 CORS 挡住 / 断网），"
+  + "STM.API 是空的，剧情照常往下走";
+
 /* ---------- 小工具 ---------- */
 const $ = (id) => document.getElementById(id);
 
@@ -393,17 +408,56 @@ function runsLen(runs){ return runs.reduce((a, r) => a + r.t.length, 0); }
    内置 JS 解释器（离线兜底 / --engine js 时使用）
    ============================================================ */
 class Jump { constructor(i){ this.index = i; } }
+class ReturnSig { constructor(){} }          // Return：子程序返回（栈空 = 结束剧本）
 let SCOPE = {}, STM = {}, R = {}, CHOSEN = new Set(), LAST = null;
 let BODY = SCRIPT.body || [], ENDING = SCRIPT.ending || [], LABELS = {};
+let SUBTAB = {};                             // 子程序表：标签名 -> 那一段语句
 let NAMES = [];
+let VFS = null;                              // 浏览器沙箱虚拟文件系统（页面启动时注入）
 const NAME_COLORS = ["#ff88bb","#7fb3ff","#6fd6a8","#ffc44d","#c79bff","#ff9d7a","#5fc9d6"];
+/* 表达式里能用的函数：对齐桌面版 stmg/runtime.py 的 SAFE_BUILTINS。
+   剧本是按桌面语义写的（比如 "得分：" + str(n)），这里缺了 str() 的话，
+   同一句台词在 wasm 引擎下正常、切到内置解释器就「算不出来」了。 */
+const FNS = {
+  str: (v) => (v === null || v === undefined) ? "" : String(v),
+  int: (v) => { const n = parseInt(v, 10); return isNaN(n) ? 0 : n; },
+  float: (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; },
+  bool: (v) => !!v,
+  abs: (v) => Math.abs(v),
+  round: (v, n) => { const p = Math.pow(10, n || 0); return Math.round(v * p) / p; },
+  min: function(){ return Math.min.apply(null, arguments); },
+  max: function(){ return Math.max.apply(null, arguments); },
+  len: (v) => {
+    if (v === null || v === undefined) return 0;
+    if (typeof v === "string" || Array.isArray(v)) return v.length;
+    return Object.keys(v).length;
+  },
+  sum: (a) => (a || []).reduce((x, y) => x + y, 0),
+  sorted: (a) => (a || []).slice().sort((x, y) => (x > y ? 1 : (x < y ? -1 : 0))),
+  range: function(a, b, s){
+    let beg = a, end = b, st = s;
+    if (end === undefined){ end = a; beg = 0; }
+    st = st || 1;
+    const out = [];
+    for (let i = beg; st > 0 ? i < end : i > end; i += st) out.push(i);
+    return out;
+  },
+};
 
 function resetState(){
   STM = {Q:"", ANSWER:"", NAME:"", API:null, OS:""};
   R = {RESULT:null};
-  SCOPE = {STM:STM, R:R}; CHOSEN = new Set(); LAST = null; NAMES = [];
-  LABELS = {};
+  SCOPE = Object.assign({STM:STM, R:R}, FNS);
+  CHOSEN = new Set(); LAST = null; NAMES = [];
+  LABELS = {}; SUBTAB = {};
   BODY.forEach((s, i) => { if (s.k === "label") LABELS[s.name] = i; });
+  // 子程序 = 从标签到下一个标签之间的语句，和桌面版 Runtime._subs 一个算法
+  BODY.forEach((s, i) => {
+    if (s.k !== "label") return;
+    const sub = [];
+    for (let j = i + 1; j < BODY.length && BODY[j].k !== "label"; j++) sub.push(BODY[j]);
+    SUBTAB[s.name] = sub;
+  });
 }
 function assign(name, value){
   if (String(name).toUpperCase().indexOf("STM.") === 0){ STM[String(name).split(".")[1]] = value; return; }
@@ -446,7 +500,7 @@ function spriteEvent(s){
   let tag = kw.tag || "";
   if (!tag) tag = path.replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "");
   const pos = String(kw.pos || (args.length > 1 ? args[1] : "center")).toLowerCase();
-  return {t:"sprite", path:path, tag:tag, pos:pos};
+  return {t:"sprite", path:path, tag:tag, pos:pos, dur:durOf(kw)};
 }
 function* execBlock(stmts){ for (const s of stmts) yield* execStmt(s); }
 function* execStmt(s){
@@ -471,6 +525,28 @@ function* execStmt(s){
       else if (s.else_body && s.else_body.length) yield* execBlock(s.else_body);
       break;
     case "else": break;
+    case "return":
+      // 子程序返回：由 execSub 接住；冒到最外层就是「结束剧本」（和桌面版一致）
+      throw new ReturnSig();
+    case "call_sub":
+      yield* execSub(s); break;
+    case "repeat": {
+      // Repeat N: N 可以是表达式；负数 / 0 / 算不出来都当 0 次
+      let n = 0;
+      try { n = parseInt(evalExpr(s.count), 10); } catch (e) { n = 0; }
+      if (!isFinite(n) || n < 0) n = 0;
+      for (let i = 0; i < n; i++) yield* execBlock(s.body || []);
+      break;
+    }
+    case "while": {
+      // While 条件: 每轮重新求值；硬上限 10000 次，和桌面版同一个数字
+      let guard = 0;
+      while (evalCond(s.cond)){
+        if (++guard > 10000) throw new Error("While 循环超过 10000 次，可能写成了死循环");
+        yield* execBlock(s.body || []);
+      }
+      break;
+    }
     case "set": assign(s.name, evalExpr(s.expr)); break;
     case "question": {
       const p = s.prompt ? stripQuotes(s.prompt) : (STM.Q || "");
@@ -489,12 +565,25 @@ function* execStmt(s){
     default: break;
   }
 }
+/* 子程序：Call "标签" —— 整段执行，遇到 Return 就回来（找不到标签只提示不崩） */
+function* execSub(s){
+  const sub = SUBTAB[s.name];
+  if (!sub){ yield {t:"toast", text:'Call "' + s.name + '" 找不到这个子程序标签'}; return; }
+  try { yield* execBlock(sub); }
+  catch (e){ if (!(e instanceof ReturnSig)) throw e; }
+}
+/* 补间时长 dur：动画可以不做，但字段得认，不能因为多了个参数就报错 */
+function durOf(kw){
+  const d = parseFloat(kw && kw.dur);
+  return isFinite(d) && d > 0 ? d : 0;
+}
 function* doCall(s){
   const obj = String(s.obj || "").toUpperCase(), m = String(s.method || "").toLowerCase();
   const args = s.args || [], kw = s.kwargs || {}, a0 = args.length ? args[0] : "";
+  const dur = durOf(kw);
   if (obj === "S"){
-    if (m === "cg" || m === "bg" || m === "background") yield {t:"bg", path:a0};
-    else if (m === "picture") yield {t:"picture", path:a0};
+    if (m === "cg" || m === "bg" || m === "background") yield {t:"bg", path:a0, dur:dur};
+    else if (m === "picture") yield {t:"picture", path:a0, dur:dur};
     else if (m === "play"){
       const loop = String(kw.loop == null ? "true" : kw.loop).toLowerCase();
       yield {t:"bgm", path:a0, loop: loop !== "false" && loop !== "0" && loop !== "no"};
@@ -512,40 +601,128 @@ function* doCall(s){
   } else if (obj === "STM"){
     yield {t:"toast", text: m === "display" ? a0 : "STM." + s.method + " 在网页版里没有实现"};
   } else if (obj === "R"){
-    yield {t:"toast", text:"网页版不支持 R.api 联网请求"};
+    if (m === "api"){
+      // 把请求交给引擎层去 await fetch，结果靠 gen.next(结果) 送回这里
+      const res = yield {t:"api_request",
+                         url: String(kw.url != null ? kw.url : a0),
+                         key: String(kw.key == null ? "" : kw.key)};
+      STM.API = (res && res.ok) ? res.result : null;
+      R.RESULT = STM.API;
+      SCOPE.STM = STM;
+      yield {t:"toast", text: (res && res.ok)
+        ? ("R.api 成功：" + String(res.result).slice(0, 60))
+        : (res && res.why ? ("R.api 失败：" + res.why) : API_FAIL_TEXT)};
+    } else {
+      yield {t:"toast", text:"R." + s.method + " 这个函数还没实现"};
+    }
   } else {
     yield {t:"toast", text:"不认识的调用：" + s.method};
   }
 }
+/* stm.os：网页版一律落到浏览器沙箱里，绝不碰玩家真实磁盘。
+   语义对齐桌面版 stmos —— remove 进虚拟回收站、revision 先留 .bak，
+   发布版同样「静默」（不弹提示），免得 DDLC 式演出穿帮。 */
 function* doStmOs(s){
-  if (s.op === "read"){ STM.OS = ""; SCOPE.STM = STM; }
-  yield {t:"noop"};
+  const op = String(s.op || "").toLowerCase();
+  const path = String(s.path || "");
+  if (!VFS || VFS.disabled){
+    STM.OS = ""; SCOPE.STM = STM;
+    yield {t:"toast", text:"网页版沙箱文件系统用不了（浏览器不支持或你拒绝了），stm.os 已跳过"};
+    return;
+  }
+  let r;
+  if (op === "read"){
+    r = VFS.read(path);
+    STM.OS = r.ok ? r.content : "";
+    SCOPE.STM = STM;
+  } else if (op === "create") r = VFS.create(path);
+  else if (op === "remove") r = VFS.remove(path);
+  else if (op === "revision") r = VFS.revision(path, s.find, s.replace);
+  else r = {ok:false, why:"stm.os 只支持 read / create / remove / revision"};
+  if (!r.ok && r.why) console.log("[stm.os] " + op + " " + path + "：" + r.why);
+  yield {t:"os_result", ok:!!r.ok, op:op, path:path, n:0};
 }
 function* runAll(){
-  let i = 0;
-  while (true){
-    try { yield* execBlock(BODY.slice(i)); break; }
-    catch (e){
-      if (e instanceof Jump){ i = e.index; continue; }
+  try {
+    let i = 0;
+    while (true){
+      try { yield* execBlock(BODY.slice(i)); break; }
+      catch (e){
+        if (e instanceof Jump){ i = e.index; continue; }
+        throw e;
+      }
+    }
+    if (ENDING.length) yield* execBlock(ENDING);
+  } catch (e){
+    if (e instanceof ReturnSig){
+      // 顶层的 Return（调用栈空）= 结束剧本，和桌面版一样不崩
+    } else {
       console.error(e);
-      yield {t:"toast", text:"剧本跑出错了：" + e.message};
-      break;
+      yield {t:"toast", text:"剧本跑出错了：" + (e && e.message || e)};
     }
   }
-  if (ENDING.length) yield* execBlock(ENDING);
   yield {t:"end"};
 }
 
 /* ============================================================
    引擎封装：wasm（真 Python 引擎）/ js（内置解释器）
    ============================================================ */
+/* ---------- R.api：真正的异步 fetch（10 秒超时） ----------
+   两个引擎共用。网页里**绝不能**用同步 XHR —— 那会把整个页面冻住，
+   所以这里一律 async/await，超时用 AbortController + Promise.race 双保险
+   （老浏览器没有 AbortController 也能按时放弃）。 */
+async function apiFetch(req){
+  const url0 = String((req && req.url) || "");
+  const key = String((req && req.key) || "");
+  const timeout = Number((req && req.timeout) || API_TIMEOUT_MS) || API_TIMEOUT_MS;
+  if (!url0) return {ok:false, result:null, why:"R.api 没写 url"};
+  const url = /^https?:\/\//i.test(url0) ? url0 : ("http://" + url0);
+  const opt = {method:"GET", headers:{}};
+  if (key) opt.headers["Authorization"] = "Bearer " + key;
+  let ctl = null, timer = null, job = null, guard = null;
+  try {
+    if (typeof AbortController === "function"){ ctl = new AbortController(); opt.signal = ctl.signal; }
+    job = fetch(url, opt);
+    guard = new Promise((_, rej) => {
+      timer = setTimeout(() => {
+        if (ctl) ctl.abort();
+        rej(new Error("TIMEOUT"));
+      }, timeout);
+    });
+    const resp = await Promise.race([job, guard]);
+    const text = await resp.text();
+    if (resp.ok) return {ok:true, result:text, why:""};
+    return {ok:false, result:null, why:"HTTP " + resp.status + " " + (resp.statusText || "")};
+  } catch (e){
+    const why = (e && e.message === "TIMEOUT")
+      ? ("超过 " + Math.round(timeout / 1000) + " 秒没响应")
+      : (e && e.name === "AbortError" ? "请求被中断（多半是超时）"
+                                      : String((e && e.message) || e));
+    return {ok:false, result:null, why:why};
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (job && job.catch) job.catch(() => {});     // race 输掉的那边别报未处理拒绝
+  }
+}
+
 class JsEngine {
   constructor(){ resetState(); this.gen = runAll(); this.done = false; }
   async next(ans){
     if (this.done) return null;
-    const r = this.gen.next(ans);
-    if (r.done){ this.done = true; return null; }
-    return r.value;
+    while (true){
+      const r = this.gen.next(ans);
+      ans = undefined;
+      if (r.done){ this.done = true; return null; }
+      const ev = r.value;
+      if (ev && ev.t === "api_request"){
+        // 解释器里 yield 出去的那条请求，结果原样 send 回去
+        const res = await apiFetch(ev);
+        if (!res.ok) toast("R.api 没成功：" + res.why);
+        ans = res;
+        continue;
+      }
+      return ev;
+    }
   }
 }
 
@@ -554,16 +731,193 @@ class PyEngine {
     this.mod = mod;
     this.driver = mod.Driver(SCRIPT_TEXT, OPTIONS_TEXT);
     this.done = false;
+    if (VFS){
+      // 先把 IndexedDB 里的沙箱文件灌进引擎，再说沙箱能不能用
+      try { this.driver.load_vfs(VFS.dump()); } catch (e){ console.warn(e); }
+      if (VFS.disabled){ try { this.driver.set_vfs_enabled(false); } catch (e){} }
+    }
   }
   async next(ans){
     if (this.done) return null;
-    let ev;
-    try { ev = JSON.parse(String(this.driver.next(ans === undefined ? null : ans))); }
-    catch (e){ console.error(e); this.done = true; return {t:"fatal", message:String(e)}; }
-    if (!ev || ev.t === "__done__"){ this.done = true; return null; }
-    return ev;
+    while (true){
+      let ev;
+      try { ev = JSON.parse(String(this.driver.next(ans === undefined ? null : ans))); }
+      catch (e){ console.error(e); this.done = true; return {t:"fatal", message:String(e)}; }
+      ans = undefined;
+      this.syncVfs();
+      if (!ev || ev.t === "__done__"){ this.done = true; return null; }
+      if (ev.t === "api_pending"){
+        // 引擎把请求挂起交给页面：fetch 完把结果送回去，它会重跑并接着往下走。
+        // 失败也照样 resolve —— 剧情不会因为联网挂掉。
+        const res = await apiFetch(ev);
+        try { this.driver.resolve_api(ev.n, res.ok, res.result); }
+        catch (e){ console.error(e); }
+        continue;
+      }
+      return ev;
+    }
+  }
+  /* 引擎改过沙箱文件就取走，写进 IndexedDB（Python 侧没法 await，只能这样同步） */
+  syncVfs(){
+    if (!VFS) return;
+    let ch = null;
+    try { ch = JSON.parse(String(this.driver.vfs_changes())); } catch (e){ return; }
+    if (ch) VFS.apply(ch);
   }
 }
+
+/* ============================================================
+   浏览器沙箱虚拟文件系统（stm.os 专用）
+
+   网页版绝不碰玩家真实磁盘：四个动作全落在浏览器自己的 IndexedDB 里，
+   换浏览器 / 清空站点数据就没了。容量用 IndexedDB 而不是 localStorage
+   （localStorage 只有几 MB，且只能存字符串）。
+   remove 只是移进虚拟回收站 .trash/，revision 先留一份 .bak —— 语义
+   和桌面版 stmg/stmos.py 对齐。浏览器不支持 / 用户拒绝时 disabled=true，
+   stm.os 退回「跳过 + 提示」，绝不报错。
+   ============================================================ */
+function createSandboxFs(){
+  const DB = "stmg-vfs", STORE = "files", KEY = "vfs", TRASH = ".trash";
+
+  const fs = {
+    files: {},          // "a/b.txt" -> 内容
+    disabled: false,    // true = 用不了，stm.os 全体降级
+    ready: false,       // IndexedDB 读过了没
+    _db: null, _timer: null,
+
+    /* 路径归一化：和 Python 侧 VirtualFS.norm 同一套规则，
+       于是两个引擎看到的是同一批文件 */
+    norm(p){
+      let s = String(p == null ? "" : p).trim().replace(/\\/g, "/");
+      const i = s.toLowerCase().indexOf("stmg-virtual:");
+      if (i >= 0) s = s.slice(i + "stmg-virtual:".length);
+      else if (s.length > 1 && s[1] === ":") s = s.slice(2);
+      const out = [];
+      s.split("/").forEach((seg) => {
+        seg = seg.trim();
+        if (seg === "" || seg === ".") return;
+        if (seg === ".."){ out.pop(); return; }
+        out.push(seg);
+      });
+      return out.join("/");
+    },
+    read(p){
+      const k = fs.norm(p);
+      if (!k) return {ok:false, content:"", why:"没给路径"};
+      if (!Object.prototype.hasOwnProperty.call(fs.files, k))
+        return {ok:false, content:"", why:"文件不存在"};
+      return {ok:true, content:String(fs.files[k])};
+    },
+    create(p){
+      const k = fs.norm(p);
+      if (!k) return {ok:false, why:"没给路径"};
+      if (Object.prototype.hasOwnProperty.call(fs.files, k))
+        return {ok:true, why:"已存在，未改动"};
+      fs.files[k] = ""; save();
+      return {ok:true, why:""};
+    },
+    remove(p){
+      const k = fs.norm(p);
+      if (!k) return {ok:false, why:"没给路径"};
+      if (!Object.prototype.hasOwnProperty.call(fs.files, k))
+        return {ok:true, why:"不存在，跳过"};
+      // 桌面版走系统回收站；网页版走虚拟回收站，同样「误删能找回」
+      const name = k.split("/").pop();
+      let dest = TRASH + "/" + name, i = 1;
+      while (Object.prototype.hasOwnProperty.call(fs.files, dest)){
+        i++; dest = TRASH + "/" + name + "." + i;
+      }
+      fs.files[dest] = fs.files[k];
+      delete fs.files[k];
+      save();
+      return {ok:true, why:""};
+    },
+    revision(p, old, val){
+      if (old == null || val == null)
+        return {ok:false, why:'revision 需要 ,"旧内容"to"新内容"'};
+      const k = fs.norm(p);
+      if (!k) return {ok:false, why:"没给路径"};
+      if (!Object.prototype.hasOwnProperty.call(fs.files, k))
+        return {ok:false, why:"文件不存在"};
+      fs.files[k + ".bak"] = fs.files[k];        // 先备份，和桌面版一样
+      const cur = String(fs.files[k]);
+      fs.files[k] = old ? cur.split(String(old)).join(String(val)) : String(val);
+      save();
+      return {ok:true, why:""};
+    },
+
+    dump(){ try { return JSON.stringify(fs.files); } catch (e){ return "{}"; } },
+    /* 引擎（Python 侧）改过的文件：合并进来再落盘 */
+    apply(ch){
+      if (!ch) return;
+      if (ch.set) Object.keys(ch.set).forEach((k) => { fs.files[k] = ch.set[k]; });
+      (ch.del || []).forEach((k) => { delete fs.files[k]; });
+      save();
+    },
+    clear(){ fs.files = {}; save(); },
+
+    /* 启动时从 IndexedDB 读回来；读不到就当空的（不影响玩） */
+    load(){
+      return openDb()
+        .then((db) => new Promise((res, rej) => {
+          let tx;
+          try { tx = db.transaction(STORE, "readonly"); } catch (e){ rej(e); return; }
+          const rq = tx.objectStore(STORE).get(KEY);
+          rq.onsuccess = () => res(rq.result || null);
+          rq.onerror = () => rej(rq.error);
+        }))
+        .then((data) => {
+          if (data && typeof data === "object") fs.files = data;
+          fs.ready = true;
+        })
+        .catch((e) => {
+          console.warn("[STMG] 浏览器沙箱文件系统用不了，stm.os 会跳过：", e);
+          fs.disabled = true; fs.ready = true; fs.files = {};
+        });
+    }
+  };
+
+  function openDb(){
+    return new Promise((res, rej) => {
+      if (fs._db){ res(fs._db); return; }
+      if (typeof indexedDB === "undefined" || !indexedDB){
+        rej(new Error("这个浏览器没有 IndexedDB")); return;
+      }
+      let req;
+      try { req = indexedDB.open(DB, 1); }
+      catch (e){ rej(e); return; }
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      };
+      req.onsuccess = () => { fs._db = req.result; res(req.result); };
+      req.onerror = () => rej(req.error || new Error("indexedDB.open 失败"));
+      req.onblocked = () => rej(new Error("IndexedDB 被别的标签页占着"));
+    });
+  }
+  /* 落盘做去抖：一次剧情里可能连着改好几个文件，别每个都开一次事务 */
+  function save(){
+    if (fs.disabled) return;
+    if (fs._timer) clearTimeout(fs._timer);
+    fs._timer = setTimeout(persist, 250);
+  }
+  function persist(){
+    fs._timer = null;
+    if (fs.disabled) return;
+    openDb().then((db) => new Promise((res, rej) => {
+      let tx;
+      try { tx = db.transaction(STORE, "readwrite"); } catch (e){ rej(e); return; }
+      tx.objectStore(STORE).put(fs.files, KEY);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+      tx.onabort = () => rej(tx.error);
+    })).catch((e) => { console.warn("[STMG] 沙箱文件落盘失败：", e); });
+  }
+
+  return fs;
+}
+VFS = createSandboxFs();
+const VFS_READY = VFS.load();     // 引擎起来之前先等它读完
 
 let PY_READY = null;         // Promise<Pyodide 模块>
 let PY_ERROR = "";           // 加载失败的原因（显示在标题界面上，方便排查）
@@ -656,6 +1010,8 @@ async function selfTest(){
 }
 
 async function newEngine(){
+  // 沙箱文件先读完再说，免得开局那几秒里 stm.os 读到空目录
+  try { await VFS_READY; } catch (e){ /* 读不到就用空沙箱，不影响玩 */ }
   if (ENGINE_KIND === "js" || !Object.keys(PY_SRC || {}).length) return new JsEngine();
   try {
     if (!PY_READY) PY_READY = bootPyodide();

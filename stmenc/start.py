@@ -64,6 +64,13 @@ def main():
     if os.path.isfile(assets):
         pack.set_current(pack.AssetPack(assets, KEY))
 
+    # 增量补丁：发布后若往游戏目录里丢 patch.stmdec / patch.json，
+    # 启动时就优先走补丁；没有补丁包时这一行等于空操作。
+    patch_dir = HERE
+    if (os.path.isfile(os.path.join(patch_dir, "patch.stmdec"))
+            or os.path.isfile(os.path.join(patch_dir, "patch.json"))):
+        pack.apply_patch(patch_dir, KEY)
+
     script = parser.parse_text(text, script_path)
     opt = optmod.load_options(optmod.find_options(script_path), KEY)
     if not opt.get("enc"):

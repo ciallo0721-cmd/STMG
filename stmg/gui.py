@@ -19,6 +19,9 @@ from .session import Session
 (TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING,
  GALLERY, WAIT) = range(11)
 
+# 设置面板里「字体」可循环切换的候选（"" = 用剧本头部的 Font=）
+FONT_CHOICES = ["", "微软雅黑", "黑体", "宋体", "楷体"]
+
 # 界面尺寸、颜色、位置全在 uiconf.DEFAULTS 里，
 # 项目目录下的 custom/gui.py 可以覆盖任意一项——别在这里写死数值。
 
@@ -31,6 +34,13 @@ class Settings(object):
         self.auto_delay = 1.6
         self.vol = {"bgm": 0.7, "se": 0.8, "voice": 1.0}
         self.fullscreen = False
+        # ---- 第 2 期新增的显示 / 排版设置（缺省值保持老行为）----
+        self.font_scale = 1.0       # 正文字号倍率 0.8~1.6
+        self.line_spacing = 1.45    # 行距 1.2~2.0
+        self.box_alpha = None       # 文本框透明度；None = 用 uiconf 的默认值
+        self.typewriter = True      # False = 文字瞬间全出
+        self.font_name = ""         # 界面字体；"" = 用剧本头部的 Font=
+        self.quick_slot = 1         # 快速存读用的槽位（F5/F9）
         self.load()
 
     def load(self):
@@ -42,6 +52,13 @@ class Settings(object):
                 self.auto_delay = d.get("auto_delay", self.auto_delay)
                 self.vol.update(d.get("vol", {}))
                 self.fullscreen = bool(d.get("fullscreen", False))
+                self.font_scale = float(d.get("font_scale", self.font_scale))
+                self.line_spacing = float(d.get("line_spacing", self.line_spacing))
+                if "box_alpha" in d:                 # 0 是合法值，不能用 d.get 的默认值
+                    self.box_alpha = d["box_alpha"]
+                self.typewriter = bool(d.get("typewriter", self.typewriter))
+                self.font_name = d.get("font_name", self.font_name) or ""
+                self.quick_slot = int(d.get("quick_slot", self.quick_slot))
             except (ValueError, OSError):
                 pass
 
@@ -52,7 +69,13 @@ class Settings(object):
                 json.dump({"text_speed": self.text_speed,
                            "auto_delay": self.auto_delay,
                            "vol": self.vol,
-                           "fullscreen": self.fullscreen}, f, indent=1)
+                           "fullscreen": self.fullscreen,
+                           "font_scale": self.font_scale,
+                           "line_spacing": self.line_spacing,
+                           "box_alpha": self.box_alpha,
+                           "typewriter": self.typewriter,
+                           "font_name": self.font_name,
+                           "quick_slot": self.quick_slot}, f, indent=1)
         except OSError:
             pass
 
@@ -72,7 +95,8 @@ class App(object):
         self._open_window()
         self.base = pygame.Surface((self.W, self.H)).convert()
 
-        self.fonts = render.FontSet(render.find_font_file(script.font))
+        self.fonts = render.FontSet(render.find_font_file(
+            self.settings.font_name or script.font))
         self.audio = Audio()
         for k, v in self.settings.vol.items():
             self.audio.set_volume(k, v)
@@ -103,6 +127,10 @@ class App(object):
         self.overlay_from = TITLE
         self.pending_toasts = []
         self.running = True
+
+        # ---- 第 2 期：补间动画状态 ----
+        self.anim = {}              # tag / 键 -> 补间动画字典
+        self._prev_scene = None    # 推进前的场景快照，用作补间的起点
 
         # ---- 玩家体验相关状态（默认均不影响原有行为）----
         self.transition = None          # 转场动画：{"kind","dur","t"} 或 None
@@ -206,8 +234,59 @@ class App(object):
                     "name": ev.get("name", ""),
                     "ttl": float(self.ui.get("achieve_popup_dur", 3.0)),
                 })
+            # ---- 第 2 期 #2：立绘 / 背景 / 叠图带上 dur 时平滑过渡，而不是瞬切 ----
+            elif ev["t"] == "sprite" and ev.get("dur"):
+                self._setup_anim("sprite", ev.get("tag") or "_", ev["dur"])
+            elif ev["t"] == "bg" and ev.get("dur"):
+                self._setup_anim("bg", "_bg", ev["dur"])
+            elif ev["t"] == "picture" and ev.get("dur"):
+                self._setup_anim("picture", "_pic", ev["dur"])
         if self.session.toasts:
             self.pending_toasts.extend(self.session.toasts)
+
+    # ------------------------------------------------------------------ #
+    # 补间动画（第 2 期 #2）
+    # ------------------------------------------------------------------ #
+    def _capture_scene(self):
+        """推进前先快照当前场景，作为补间的起点。"""
+        sc = self.session.scene
+        return {
+            "bg": sc.get("bg", ""),
+            "picture": sc.get("picture", ""),
+            "sprites": {t: dict(v) for t, v in (sc.get("sprites") or {}).items()},
+        }
+
+    def _setup_anim(self, kind, key, dur):
+        """为一个 sprite/bg/picture 建立补间：from=起点，to=当前场景终态。"""
+        if self._prev_scene is None:
+            return                          # 读档 / 开局等没有起点，直接落终态
+        if self.skip:
+            self.anim.pop(key, None)        # 快进 / 跳过：直接到终态
+            return
+        if kind == "sprite":
+            to = dict(self.session.scene.get("sprites", {}).get(key, {}))
+            fr = dict(self._prev_scene["sprites"].get(key, to))
+        elif kind == "bg":
+            to = {"path": self.session.scene.get("bg", "")}
+            fr = {"path": self._prev_scene.get("bg", "")}
+        else:                               # picture
+            to = {"path": self.session.scene.get("picture", "")}
+            fr = {"path": self._prev_scene.get("picture", "")}
+        self.anim[key] = {"kind": kind, "from": fr, "to": to,
+                          "t": 0.0, "dur": max(0.0, float(dur))}
+
+    @staticmethod
+    def _anim_p(a):
+        if a["dur"] <= 0:
+            return 1.0
+        return min(1.0, a["t"] / a["dur"])
+
+    def _sprite_cx(self, item):
+        """立绘水平中心 x（像素）；补间时用插值后的 _xfrac，否则按 pos 映射。"""
+        xfr = item.get("_xfrac")
+        if xfr is None:
+            xfr = self.ui["sprite_x"].get(item.get("pos", "center"), 0.5)
+        return int(self.W * xfr)
 
     # ------------------------------------------------------------------ #
     # 主循环
@@ -225,12 +304,33 @@ class App(object):
         pygame.quit()
 
     def update(self, dt):
+        # 音频淡入淡出驱动（第 2 期 #5，T5 提供 update；没实现就跳过，保证不崩）
+        au = getattr(self.audio, "update", None)
+        if callable(au):
+            try:
+                au(dt)
+            except Exception:                              # noqa: BLE001
+                pass
+
         # 转场动画独立于台词推进，每帧累加时间，到时结束
         if self.transition:
             self.transition["t"] += dt
             if self.transition["t"] >= self.transition["dur"]:
                 self.transition = None
                 self._prev_frame = None
+
+        # 补间动画：每帧推进，到时删掉（场景已是终态）；快进直接落终态
+        if self.anim:
+            if self.skip:
+                self.anim.clear()
+            else:
+                for a in self.anim.values():
+                    if a["dur"] > 0:
+                        a["t"] += dt
+                for k in [k for k in self.anim
+                          if self.anim[k]["dur"] <= 0
+                          or self.anim[k]["t"] >= self.anim[k]["dur"]]:
+                    del self.anim[k]
 
         # python 代码块的逐行提示：等够 dur 秒就自动推进（点一下可以提前跳过）
         if self.state == WAIT:
@@ -243,7 +343,8 @@ class App(object):
                 self.sync_state()
 
         if self.state in (ADVANCE, CHOOSE, QUESTION):
-            if self.settings.text_speed < 0:
+            # 第 2 期：关掉打字机、或文字速度为负，都让文字瞬间全出
+            if self.settings.text_speed < 0 or not self.settings.typewriter:
                 self.reveal = 1e9
             else:
                 self.reveal += self.settings.text_speed * dt
@@ -293,6 +394,7 @@ class App(object):
     def advance(self):
         if self.state != ADVANCE:
             return
+        self._prev_scene = self._capture_scene()
         blk = self.session.block
         if blk and blk["t"] == "say":
             # 玩家把这句推过去，说明读过了，下次快进可以跳过
@@ -305,6 +407,7 @@ class App(object):
         self.sync_state()
 
     def choose(self, index):
+        self._prev_scene = self._capture_scene()
         self.reveal = 0.0
         self._shown_chars = 0
         self.session.answer(self.session.block["options"][index])
@@ -312,6 +415,7 @@ class App(object):
         self.sync_state()
 
     def submit_answer(self, text):
+        self._prev_scene = self._capture_scene()
         self.reveal = 0.0
         self._shown_chars = 0
         self.session.answer(text)
@@ -462,9 +566,16 @@ class App(object):
             elif k in (pygame.K_LCTRL, pygame.K_RCTRL):
                 self.skip = True
             elif k == pygame.K_F5:
-                self.open_saveload(True)
+                # Shift+F5 开存读档界面；否则快速存到上次用的槽（没有就槽 1）
+                if event.mod & pygame.KMOD_SHIFT:
+                    self.open_saveload(True)
+                else:
+                    self.quick_save()
             elif k == pygame.K_F9:
-                self.open_saveload(False)
+                if event.mod & pygame.KMOD_SHIFT:
+                    self.open_saveload(False)
+                else:
+                    self.quick_load()
         elif self.state == ENDING and k in (pygame.K_RETURN, pygame.K_SPACE):
             self.running = False
         elif self.state == ERROR and k == pygame.K_RETURN:
@@ -530,6 +641,8 @@ class App(object):
             self.audio.apply({"t": "stop", "what": "bgm"})
             for k, v in self.settings.vol.items():
                 self.audio.set_volume(k, v)
+        self._prev_scene = None
+        self.anim.clear()
         self.session.reset()
         self.apply_effects()
         self.reveal = 0.0
@@ -706,37 +819,64 @@ class App(object):
 
     def draw_scene(self):
         self.base.fill((16, 16, 22))
-        bg = render.load_image(self.session.scene.get("bg", ""))
-        if bg:
-            bg = render.fit_into(bg, self.W, self.H)
-            self.base.blit(bg, ((self.W - bg.get_width()) // 2,
-                                (self.H - bg.get_height()) // 2))
+        # 背景：带 dur 时做交叉淡入（老背景先停着，新背景渐渐显出来）
+        bg_path = self.session.scene.get("bg", "")
+        a = self.anim.get("_bg")
+        if a is not None:
+            p = self._anim_p(a)
+            old = a["from"].get("path", "")
+            oldimg = render.load_image(old) if old else None
+            if oldimg:
+                oldimg = render.fit_into(oldimg, self.W, self.H)
+                self.base.blit(oldimg, ((self.W - oldimg.get_width()) // 2,
+                                        (self.H - oldimg.get_height()) // 2))
+            self._draw_crossfade(bg_path, p, self.W, self.H, 0.72)
         else:
-            render.draw_placeholder(self.base, pygame.Rect(0, 0, self.W, int(self.H * 0.72)),
-                                    self.session.scene.get("bg") or "背景", 0)
-
-        pic = self.session.scene.get("picture", "")
-        if pic:
-            img = render.load_image(pic)
-            if img:
-                img = render.fit_into(img, int(self.W * self.ui["pic_w"]),
-                                      int(self.H * self.ui["pic_h"]))
-                self.base.blit(img, ((self.W - img.get_width()) // 2,
-                                     int(self.H * self.ui["pic_center_y"])
-                                     - img.get_height()))
+            bg = render.load_image(bg_path)
+            if bg:
+                bg = render.fit_into(bg, self.W, self.H)
+                self.base.blit(bg, ((self.W - bg.get_width()) // 2,
+                                    (self.H - bg.get_height()) // 2))
             else:
-                r = pygame.Rect(int(self.W * (0.5 - self.ui["pic_w"] / 2.0)),
-                                int(self.H * 0.1), int(self.W * self.ui["pic_w"]),
-                                int(self.H * (self.ui["pic_h"] - 0.1)))
-                render.draw_placeholder(self.base, r, pic, 2)
+                render.draw_placeholder(self.base, pygame.Rect(0, 0, self.W, int(self.H * 0.72)),
+                                        bg_path or "背景", 0)
+
+        # 叠图：带 dur 时同样淡入
+        pic = self.session.scene.get("picture", "")
+        a = self.anim.get("_pic")
+        if a is not None:
+            p = self._anim_p(a)
+            old = a["from"].get("path", "")
+            if old:
+                oimg = render.load_image(old)
+                if oimg:
+                    oimg = render.fit_into(oimg, int(self.W * self.ui["pic_w"]),
+                                           int(self.H * self.ui["pic_h"]))
+                    self.base.blit(oimg, ((self.W - oimg.get_width()) // 2,
+                                          int(self.H * self.ui["pic_center_y"])
+                                          - oimg.get_height()))
+            self._draw_pic(pic, p)
+        elif pic:
+            self._draw_pic(pic, 1.0)
+        else:
+            r = pygame.Rect(int(self.W * (0.5 - self.ui["pic_w"] / 2.0)),
+                            int(self.H * 0.1), int(self.W * self.ui["pic_w"]),
+                            int(self.H * (self.ui["pic_h"] - 0.1)))
+            render.draw_placeholder(self.base, r, pic, 2)
 
         # 立绘：tag -> {path, pos}，可以同时站好几张，按 tag 排序保证叠放稳定
         sprites = self.session.scene.get("sprites") or {}
         u = self.ui
         for i, tag in enumerate(sorted(sprites)):
             item = sprites[tag]
+            # 补间进行中：用插值后的 item（水平位置用 _xfrac 表达）
+            a = self.anim.get(tag)
+            if a is not None:
+                item = render.tween_sprite(a["from"], a["to"], self._anim_p(a),
+                                           u["sprite_x"],
+                                           u.get("sprite_scale_default", 1.0))
             path = item.get("path", "")
-            cx = int(self.W * u["sprite_x"].get(item.get("pos", "center"), 0.5))
+            cx = self._sprite_cx(item)
             bottom = int(self.H * u["sprite_bottom"])
             img = render.load_image(path)
             if img:
@@ -749,6 +889,39 @@ class App(object):
 
         self.draw_textbox()
 
+    def _draw_crossfade(self, path, p, w, h, h_frac):
+        """按透明度 p 把图片淡入到全屏（背景补间用，p<1 时半透明）。"""
+        img = render.load_image(path)
+        if not img:
+            render.draw_placeholder(self.base,
+                                   pygame.Rect(0, 0, w, int(h * h_frac)),
+                                   path or "背景", 0)
+            return
+        img = render.fit_into(img, w, h)
+        surf = img.copy()
+        surf.set_alpha(int(255 * p))
+        self.base.blit(surf, ((w - surf.get_width()) // 2,
+                              (h - surf.get_height()) // 2))
+
+    def _draw_pic(self, path, p):
+        """画叠图；p<1 时按透明度淡入（叠图补间用）。"""
+        if not path:
+            return
+        img = render.load_image(path)
+        if not img:
+            r = pygame.Rect(int(self.W * (0.5 - self.ui["pic_w"] / 2.0)),
+                            int(self.H * 0.1), int(self.W * self.ui["pic_w"]),
+                            int(self.H * (self.ui["pic_h"] - 0.1)))
+            render.draw_placeholder(self.base, r, path, 2)
+            return
+        img = render.fit_into(img, int(self.W * self.ui["pic_w"]),
+                              int(self.H * self.ui["pic_h"]))
+        if p < 1.0:
+            img = img.copy()
+            img.set_alpha(int(255 * p))
+        self.base.blit(img, ((self.W - img.get_width()) // 2,
+                             int(self.H * self.ui["pic_center_y"]) - img.get_height()))
+
     def draw_textbox(self):
         u = self.ui
         box = self.box_rect()
@@ -758,7 +931,11 @@ class App(object):
         else:
             panel = pygame.Surface(box.size, pygame.SRCALPHA)
             c = u["box_color"]
-            panel.fill((c[0], c[1], c[2], u["box_alpha"]))
+            # 第 2 期：设置里 box_alpha 非 None 时覆盖透明度
+            alpha = self.settings.box_alpha
+            if alpha is None:
+                alpha = u["box_alpha"]
+            panel.fill((c[0], c[1], c[2], alpha))
             self.base.blit(panel, box)
             if u["box_border"]:
                 pygame.draw.rect(self.base, u["box_border_color"], box,
@@ -779,12 +956,15 @@ class App(object):
             y = box.y + pad
 
         runs = render.md(text)
+        # 第 2 期 #8：字号倍率乘到 base_size，行距用设置值
+        base = u["text_size"] * self.settings.font_scale
         lines, line_h = render.layout(runs, self.fonts,
                                       box.width - pad * 2,
-                                      base_size=u["text_size"])
+                                      base_size=base,
+                                      line_spacing=self.settings.line_spacing)
         shown = render.reveal(lines, int(self.reveal))
         render.draw_lines(self.base, shown, self.fonts, box.x + pad, y,
-                          line_h, base_size=u["text_size"])
+                          line_h, base_size=base)
 
     def draw_choices(self):
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
@@ -830,7 +1010,7 @@ class App(object):
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 150))
         self.base.blit(dim, (0, 0))
-        panel = pygame.Rect(self.W // 2 - 190, self.H // 2 - 224, 380, 448)
+        panel = pygame.Rect(self.W // 2 - 190, self.H // 2 - 310, 380, 640)
         pygame.draw.rect(self.base, (250, 250, 254), panel, border_radius=14)
         f = self.fonts.get(24, bold=True)
         t = f.render("菜单", True, (40, 40, 60))
@@ -854,12 +1034,24 @@ class App(object):
                      ("文字速度 " + ("瞬间" if self.settings.text_speed < 0
                                   else "%d 字/秒" % int(self.settings.text_speed)),
                       self.cycle_speed),
+                     ("文字大小 %d%%" % int(self.settings.font_scale * 100),
+                      self.cycle_font_scale),
+                     ("行距 %.1f" % self.settings.line_spacing,
+                      self.cycle_line_spacing),
+                     ("对话框透明度 %s" % ("默认" if self.settings.box_alpha is None
+                                       else "%d%%" % int(self.settings.box_alpha / 255.0 * 100)),
+                      self.cycle_box_alpha),
+                     ("打字机 %s" % ("开" if self.settings.typewriter else "关"),
+                      self.toggle_typewriter),
+                     ("字体：%s" % (self.settings.font_name or "剧本默认"),
+                      self.cycle_font),
                      ("BGM 音量 %d%%" % int(self.settings.vol["bgm"] * 100),
                       lambda: self.cycle_vol("bgm")),
                      ("音效音量 %d%%" % int(self.settings.vol["se"] * 100),
                       lambda: self.cycle_vol("se")),
                      ("语音音量 %d%%" % int(self.settings.vol["voice"] * 100),
                       lambda: self.cycle_vol("voice")),
+                     ("重听语音", self.replay_voice),
                      ("全屏：%s  (F11)" % ("开" if self.settings.fullscreen else "关"),
                       self.toggle_fullscreen),
                      ("返回游戏", self._back),
@@ -868,7 +1060,7 @@ class App(object):
             for label, act in items:
                 self.buttons.append(render.Button(
                     pygame.Rect(panel.x + 40, y, panel.width - 80, 32), label, act))
-                y += 36
+                y += 34
         self.draw_buttons(18)
 
     def _back(self):
@@ -891,6 +1083,64 @@ class App(object):
             v = 0.0
         self.settings.vol[kind] = v
         self.audio.set_volume(kind, v)
+
+    # ------------------------------------------------------------------ #
+    # 第 2 期 #8：设置面板的循环调节项
+    # ------------------------------------------------------------------ #
+    def cycle_font_scale(self):
+        # 0.8 -> 1.0 -> 1.2 -> 1.4 -> 1.6 -> 回到 0.8
+        steps = [0.8, 1.0, 1.2, 1.4, 1.6]
+        i = steps.index(round(self.settings.font_scale, 2)) \
+            if round(self.settings.font_scale, 2) in steps else 0
+        self.settings.font_scale = steps[(i + 1) % len(steps)]
+
+    def cycle_line_spacing(self):
+        # 1.2 -> 1.4 -> 1.6 -> 1.8 -> 2.0 -> 回到 1.2
+        steps = [1.2, 1.4, 1.6, 1.8, 2.0]
+        i = steps.index(round(self.settings.line_spacing, 2)) \
+            if round(self.settings.line_spacing, 2) in steps else 0
+        self.settings.line_spacing = steps[(i + 1) % len(steps)]
+
+    def cycle_box_alpha(self):
+        # None(默认) -> 不透明 -> 渐透 -> 更透 -> 最透 -> 回到默认
+        seq = [None, 255, 200, 150, 100]
+        try:
+            i = seq.index(self.settings.box_alpha)
+        except (ValueError, TypeError):
+            i = 0
+        self.settings.box_alpha = seq[(i + 1) % len(seq)]
+
+    def toggle_typewriter(self):
+        self.settings.typewriter = not self.settings.typewriter
+
+    def cycle_font(self):
+        choices = FONT_CHOICES
+        try:
+            i = choices.index(self.settings.font_name)
+        except ValueError:
+            i = 0
+        self.settings.font_name = choices[(i + 1) % len(choices)]
+        self._apply_font()
+
+    def _apply_font(self):
+        """按当前 font_name 重建字体集；"" 时用剧本头部的 Font=。"""
+        name = self.settings.font_name
+        self.fonts = render.FontSet(
+            render.find_font_file(name if name else self.script.font))
+
+    def replay_voice(self):
+        """重听最后一句语音（第 2 期 #10，T5 提供 replay_voice；未实现就提示，不崩）。"""
+        rp = getattr(self.audio, "replay_voice", None)
+        if not callable(rp):
+            if self.dev_mode:
+                self.pending_toasts.append("语音重听功能尚未就绪")
+            return
+        try:
+            if not rp():
+                if self.dev_mode:
+                    self.pending_toasts.append("没有可重听的语音")
+        except Exception:                              # noqa: BLE001
+            pass
 
     def draw_backlog(self):
         self.buttons = []
@@ -930,31 +1180,87 @@ class App(object):
         t = self.fonts.get(23, bold=True).render(title, True, (40, 40, 60))
         self.base.blit(t, (panel.centerx - t.get_width() // 2, panel.y + 18))
 
+        # T2 是否提供缩略图读写；拿不到就走纯文字（向后兼容）
+        thumb_fn = getattr(savemod, "thumb_path", None)
+        has_fn = getattr(savemod, "has_thumb", None)
+        thumb_ok = callable(thumb_fn) and callable(has_fn)
+
         slots = savemod.list_slots(self.root)
         w = (panel.width - 60) // 2
         for i in range(savemod.SLOTS):
+            n = i + 1
+            snap = slots[i]
             col, row = i % 2, i // 2
-            r = pygame.Rect(panel.x + 24 + col * (w + 12), panel.y + 70 + row * 62, w, 52)
+            r = pygame.Rect(panel.x + 24 + col * (w + 12),
+                             panel.y + 70 + row * 62, w, 52)
+            img = None
+            # 有缩略图就画出来（约 120×54），否则回退到现在的文字描述
+            if thumb_ok and has_fn(self.root, n):
+                surf = self._load_thumb(thumb_fn(self.root, n), r)
+                if surf is not None:
+                    img = pygame.Surface(r.size, pygame.SRCALPHA)
+                    img.blit(surf, (8, (r.height - surf.get_height()) // 2))
+                    f = self.fonts.get(15)
+                    label = f.render("%d. %s" % (n, savemod.describe(snap)),
+                                     True, (40, 40, 60))
+                    img.blit(label, (140, r.height // 2 - 9))
             if self.save_mode:
-                act = (lambda n=i + 1: self.do_save(n))
+                act = (lambda nn=n: self.do_save(nn))
             else:
-                act = (lambda n=i + 1: self.do_load(n))
+                act = (lambda nn=n: self.do_load(nn))
             self.buttons.append(render.Button(
-                r, "%d. %s" % (i + 1, savemod.describe(slots[i])), act))
+                r, "%d. %s" % (n, savemod.describe(snap)), act, img))
+
+        # 第 2 期 #6：导入 / 导出存档（用系统文件对话框，结果以提示反馈）
+        bw = (w - 12) // 2
+        self.buttons.append(render.Button(
+            pygame.Rect(panel.x + 24, panel.bottom - 108, bw, 36),
+            "导出存档…", self.export_save))
+        self.buttons.append(render.Button(
+            pygame.Rect(panel.x + 24 + bw + 12, panel.bottom - 108, bw, 36),
+            "导入存档…", self.import_save))
         self.buttons.append(render.Button(
             pygame.Rect(panel.centerx - 70, panel.bottom - 60, 140, 42),
             "返回", self._back))
         self.draw_buttons(17)
 
+    def _load_thumb(self, path, r):
+        """读存档缩略图并缩放成按钮里能放下的小图（约 120×54）。"""
+        try:
+            surf = pygame.image.load(path)
+        except Exception:                              # noqa: BLE001
+            return None
+        return render.fit_into(surf, 120, 54)
+
     def do_save(self, n):
         savemod.write_slot(self.root, n, self.session.snapshot())
+        self.settings.quick_slot = n
         self.pending_toasts.append("已保存到第 %d 格" % n)
+        # 缩略图：把当前画面存成小图（T2 提供 thumb_path；未提供就跳过）
+        thumb_fn = getattr(savemod, "thumb_path", None)
+        if callable(thumb_fn):
+            try:
+                pygame.image.save(self.screen, thumb_fn(self.root, n))
+            except Exception as e:                         # noqa: BLE001
+                # 缩略图写失败（没权限等）不能影响存档本身
+                if self.dev_mode:
+                    self.pending_toasts.append("缩略图保存失败：%s" % e)
+
+    def quick_save(self):
+        """F5：快速存到上次用的槽（没有就槽 1）。"""
+        self.do_save(self.settings.quick_slot)
+
+    def quick_load(self):
+        """F9：快速读上次用的槽。"""
+        self.do_load(self.settings.quick_slot)
 
     def do_load(self, n):
         snap = savemod.read_slot(self.root, n)
         if not snap:
             self.pending_toasts.append("第 %d 格是空的" % n)
             return
+        self._prev_scene = None       # 读档不补间，直接落到终态
+        self.anim.clear()
         try:
             self.session.restore(snap)
             self.apply_effects()
@@ -967,6 +1273,66 @@ class App(object):
         except Exception as e:                       # noqa: BLE001
             self.error_text = "读档失败：%s\n%s" % (e, format_exception(e))
             self.state = ERROR
+
+    # ------------------------------------------------------------------ #
+    # 第 2 期 #6：存档导入 / 导出（用系统文件对话框，结果以提示反馈）
+    # ------------------------------------------------------------------ #
+    def export_save(self):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            out = filedialog.asksaveasfilename(
+                title="导出存档",
+                defaultextension=".stmgsav",
+                filetypes=[("STMG 存档包", "*.stmgsav")])
+            root.destroy()
+        except Exception as e:                         # noqa: BLE001
+            if self.dev_mode:
+                self.pending_toasts.append("打开文件对话框失败：%s" % e)
+            return
+        if not out:
+            return
+        fn = getattr(savemod, "export_slots", None)
+        if not callable(fn):
+            self.pending_toasts.append("存档导入导出功能尚未就绪")
+            return
+        try:
+            res = fn(self.root, self.script.title, out)
+            ok = bool(res[0])
+            msg = res[1] if len(res) > 1 else ("导出成功" if ok else "导出失败")
+        except Exception as e:                         # noqa: BLE001
+            ok, msg = False, "导出失败：%s" % e
+        self.pending_toasts.append(msg)
+
+    def import_save(self):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            src = filedialog.askopenfilename(
+                title="导入存档",
+                filetypes=[("STMG 存档包", "*.stmgsav")])
+            root.destroy()
+        except Exception as e:                         # noqa: BLE001
+            if self.dev_mode:
+                self.pending_toasts.append("打开文件对话框失败：%s" % e)
+            return
+        if not src:
+            return
+        fn = getattr(savemod, "import_slots", None)
+        if not callable(fn):
+            self.pending_toasts.append("存档导入导出功能尚未就绪")
+            return
+        try:
+            res = fn(src, self.root)
+            ok = bool(res[0])
+            msg = res[1] if len(res) > 1 else ("导入成功" if ok else "导入失败")
+        except Exception as e:                         # noqa: BLE001
+            ok, msg = False, "导入失败：%s" % e
+        self.pending_toasts.append(msg)
 
     # ------------------------------------------------------------------ #
     def _error_rows(self):

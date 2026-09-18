@@ -59,6 +59,17 @@ HEADER_KV_RE = re.compile(r"^([A-Za-z_]\w*)\s*=\s*(.*)$")
 # 一整行只由 "字符串" 和冒号组成 —— 这才是 Choose 的选项行
 OPTIONS_RE = re.compile(r'^\s*(?:"[^"]*"\s*[:：]?\s*)+\s*$')
 
+# include 多文件剧本：解析期内联目标文件的正文
+INCLUDE_RE = re.compile(r'^include\s+"([^"]*)"\s*$', re.I)
+# 子程序调用：Call "标签" 或 Call 标签
+CALLSUB_RE = re.compile(r'^Call\s+"([^"]*)"\s*$', re.I)
+CALLSUB_RE2 = re.compile(r'^Call\s+([A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff]*)\s*$', re.I)
+# 子程序返回
+RETURN_RE = re.compile(r'^Return\s*$', re.I)
+# 循环：Repeat N: / While 条件:（缩进子块）
+REPEAT_RE = re.compile(r'^Repeat\s+(.+?)\s*:\s*$', re.I)
+WHILE_RE = re.compile(r'^While\s+(.+?)\s*:\s*$', re.I)
+
 END_KEYWORDS = {"endif", "endchoose"}
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".avif")
@@ -280,11 +291,79 @@ def _looks_like_image(v):
     return v.endswith(IMAGE_EXT) or "/" in v or "\\" in v
 
 
+def _prefix_issue(iss, base):
+    """给被 include 文件的报错加上文件名前缀，方便定位到 chapter1.stm:行12。"""
+    if iss.line:
+        msg = "%s:行%d %s" % (base, iss.line, iss.message)
+    else:
+        msg = "%s: %s" % (base, iss.message)
+    return Issue(iss.line, msg, iss.hint, iss.level)
+
+
+def _tag_file(stmts, base):
+    """给 include 进来的语句打上原文件名（file 字段），递归进嵌套的 if/choose。
+
+    这样运行时报错、调试都能知道这句来自哪个文件；顶层剧本的语句不带 file 字段
+    （保持老行为）。
+    """
+    out = []
+    for st in stmts:
+        st = dict(st)
+        st["file"] = base
+        for key in ("body", "else_body"):
+            if st.get(key):
+                st[key] = _tag_file(st[key], base)
+        out.append(st)
+    return out
+
+
+def _expand_include(raw, n, base_dir, incl_chain, issues):
+    """处理 include "x.stm"：读目标文件、整体解析、把正文内联进来。
+
+    返回 (语句列表, [Issue, ...])。找不到 / 循环 include 都通过 Issue 报错，
+    **不崩溃**——主解析照常继续（缺文件的那段就当空）。
+    """
+    target = raw.strip().replace("\\", "/")
+    if base_dir:
+        target = os.path.join(base_dir, target)
+    target = os.path.abspath(target)
+    base = os.path.basename(target)
+
+    if os.path.isfile(target):
+        if target in incl_chain:
+            # 循环 include（A include B、B 又 include A）：报错并停止展开
+            return [], [Issue(n, "%s: 检测到循环 include（%s 已经被包含过了）"
+                                 % (base, base),
+                                 "检查是不是 A include B、B 又 include A 了")]
+        try:
+            with open(target, "r", encoding="utf-8-sig") as f:
+                text = f.read()
+        except OSError as e:
+            return [], [Issue(n, "%s: 读不了：%s" % (base, e))]
+        # 嵌套 include 时把当前文件压进链，子文件里再 include 自己就报错
+        sub_chain = list(incl_chain) + [target]
+        sc2 = parse_text(text, target)
+        # 被 include 的文件不需要 Start:（入口只在主剧本里），这条提醒对它没有意义，
+        # 滤掉免得每 include 一个文件就多一条无用提示
+        out_issues = [_prefix_issue(iss, base) for iss in sc2.issues
+                      if "没有 Start" not in (getattr(iss, "message", "") or "")]
+        return _tag_file(sc2.body, base), out_issues
+
+    return [], [Issue(n, "%s: 文件找不到（include 解析不到「%s」）" % (base, raw),
+                      "确认路径是相对当前剧本文件所在目录写的")]
+
+
 # --------------------------------------------------------------------------- #
 # 语句解析
 # --------------------------------------------------------------------------- #
-def _parse_lines(lines, issues, pyblocks=None):
-    """把 [(行号, 原文), ...] 解析成语句列表。缩进代表嵌套。"""
+def _parse_lines(lines, issues, pyblocks=None, base_dir=None, incl_chain=None):
+    """把 [(行号, 原文), ...] 解析成语句列表。缩进代表嵌套。
+
+    base_dir / incl_chain 给 include 用：base_dir 是当前文件所在目录（相对它解析
+    被包含文件），incl_chain 是已经展开过的文件绝对路径链（防循环）。
+    """
+    if incl_chain is None:
+        incl_chain = []
     items = []
     for n, raw in lines:
         if not raw.strip():
@@ -337,6 +416,56 @@ def _parse_lines(lines, issues, pyblocks=None):
                                     % s, "如果不需要就删掉，或者检查缩进对不对", "warn"))
                 continue
             last_block[0] = False
+
+            # --- include 多文件剧本：解析期内联目标文件正文 ---
+            im = INCLUDE_RE.match(s)
+            if im:
+                pos[0] += 1
+                sub, sub_issues = _expand_include(im.group(1), n, base_dir,
+                                                  incl_chain, issues)
+                issues.extend(sub_issues)
+                stmts.extend(sub)
+                continue
+
+            # --- 子程序返回 Return（栈空时由 run() 结束剧本）---
+            if RETURN_RE.match(s):
+                pos[0] += 1
+                stmts.append({"k": "return", "line": n})
+                continue
+
+            # --- 子程序调用 Call "标签" / Call 标签 ---
+            cm = CALLSUB_RE.match(s) or CALLSUB_RE2.match(s)
+            if cm:
+                pos[0] += 1
+                stmts.append({"k": "call_sub", "name": cm.group(1), "line": n})
+                continue
+
+            # --- Repeat N: / While 条件: 循环（缩进子块）---
+            rm = REPEAT_RE.match(s)
+            if rm:
+                pos[0] += 1
+                if pos[0] < len(items) and items[pos[0]][1] > indent:
+                    body = parse_block(items[pos[0]][1], allow_empty=False)
+                else:
+                    body = []
+                    issues.append(Issue(n, "Repeat 下面的循环体没缩进，引擎不知道要循环到哪",
+                                        "循环体往前缩进 4 格"))
+                stmts.append({"k": "repeat", "count": rm.group(1).strip(),
+                              "body": body, "line": n})
+                continue
+
+            wm = WHILE_RE.match(s)
+            if wm:
+                pos[0] += 1
+                if pos[0] < len(items) and items[pos[0]][1] > indent:
+                    body = parse_block(items[pos[0]][1], allow_empty=False)
+                else:
+                    body = []
+                    issues.append(Issue(n, "While 下面的循环体没缩进，引擎不知道要循环到哪",
+                                        "循环体往前缩进 4 格"))
+                stmts.append({"k": "while", "cond": wm.group(1).strip(),
+                              "body": body, "line": n})
+                continue
 
             # --- Else: ---
             if ELSE_RE.match(s):
@@ -547,6 +676,9 @@ def parse_file(path):
 
 def parse_text(text, path="<memory>"):
     sc = Script(path)
+    # include 相对「当前剧本文件所在目录」解析；<memory> 之类无路径的就相对当前目录
+    base_dir = os.path.dirname(os.path.abspath(path)) if path else ""
+    incl_chain = []
     if "\u201c" in text or "\u201d" in text:
         sc.issues.append(Issue(None, "剧本里用了中文引号 “ ”，已经帮你换成英文引号了",
                                "以后直接打英文半角引号更稳妥", "warn"))
@@ -576,20 +708,22 @@ def parse_text(text, path="<memory>"):
                or (nonblank and kv * 2 < len(nonblank)))
 
     if is_body:
-        sc.body = _parse_lines(first[1], sc.issues, sc.pyblocks)
+        sc.body = _parse_lines(first[1], sc.issues, sc.pyblocks, base_dir, incl_chain)
         remaining.pop(0)
     else:
         sc.header = _parse_header(first[1], sc.issues)
         remaining.pop(0)
         if remaining:
-            sc.body = _parse_lines(remaining[0][1], sc.issues, sc.pyblocks)
+            sc.body = _parse_lines(remaining[0][1], sc.issues, sc.pyblocks,
+                                   base_dir, incl_chain)
             remaining.pop(0)
 
     if remaining:
         end_lines = []
         for _, ls in remaining:
             end_lines.extend(ls)
-        sc.ending = _parse_lines(end_lines, sc.issues, sc.pyblocks)
+        sc.ending = _parse_lines(end_lines, sc.issues, sc.pyblocks,
+                                 base_dir, incl_chain)
 
     if not sc.body:
         sc.issues.append(Issue(None, "正文是空的，游戏一开场就结束了",

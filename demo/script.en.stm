@@ -1,0 +1,98 @@
+<
+Size=1280x720
+title="STMG Demo Script (English)"
+Ver="1.0.0"
+Pack="com.example.stmg.demo"
+Lang="en"
+Font="Microsoft YaHei"
+>
+<
+Start:
+<-- register characters: a path-like arg is a portrait, otherwise it's a name tag -->
+S.character("Role1")
+S.character("Role2")
+
+S.cg("bg/room.png")
+S.play("music/bgm.mp3")
+
+"This is a demo script written in STMG. If it runs, the engine isn't broken."
+"These lines walk through the engine's main features — feel free to tweak them."
+
+Role1"Hello, I'm Role1."
+
+STM.display("Assets loaded (missing images draw a placeholder block)")
+
+<-- variables: must be declared with SET the first time -->
+SET affinity = 0
+
+"A note sits on the table."
+
+Choose:
+    "Read the note":"Take a nap first"
+
+If "Read the note":
+    S.sound("music/paper.wav")
+    S.picture("png/note.png")
+    "The note reads: **Get this engine done by the end of the day.**"
+    SET affinity = affinity + 10
+    Role1"Oh? Are you here to check it off?"
+
+If "Take a nap first":
+    S.cg("bg/dark.png")
+    "You took a nap and woke up after dark."
+    SET affinity = affinity - 5
+    Role1"[color=#ff88bb]Stop sleeping[/color], it's already dark."
+EndIf
+
+S.hide("picture")
+
+"The two lean in to look at the screen."
+
+<-- prompt text for the question box: written into STM.Q, or indented under Question: -->
+STM.Q = "What's your name?"
+Question:
+
+"So your name is [color=#7fb3ff]**" + STM.ANSWER + "**[/color]."
+
+If affinity >= 10:
+    Role1"Hmm, you look pretty reliable."
+Else:
+    Role2"I don't think he's up to it."
+
+<-- multiple portraits can stand at once; tag tells them apart, pos sets the side -->
+S.character("png/char1.png", pos="left", tag="Role1")
+S.character("png/char2.png", pos="right", tag="Role2")
+
+"The two stand together."
+
+S.hide("Role2")
+Role1"He left first."
+
+S.voice("music/voice001.wav")
+Role1"Come, {ruby:test|はか} your ~~sincerity~~ depth."
+
+<-- the networking bit only runs in the "Take a nap first" branch, so normal tests won't hang on the network -->
+If "Take a nap first":
+    R.api(url="api.example.com/ping", key=option)
+    "(the line above is a demo of R.api)"
+
+<-- python code block: declare libs with stmg.python("lib"), code below; each print line floats to the top-right.
+     python: <number> = seconds between lines, default 3 -->
+stmg.python("math")
+<
+python: 1
+total = sum(range(1, 11))
+print("1 + ... + 10 = %d" % total)
+print("math.sqrt(2) = %.4f" % math.sqrt(2))
+>
+
+<-- the total computed in code comes back automatically; reference it directly in lines -->
+"The total from python also works in lines: [color=#ff88bb]**" + str(total) + "**[/color]."
+
+S.stop("all")
+S.cg("")
+S.hide("all")
+>
+<
+"Thanks for playing"
+>

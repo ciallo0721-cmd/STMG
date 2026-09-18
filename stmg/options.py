@@ -29,6 +29,8 @@ DEFAULTS = {
     "key": "",
     "dec": [],
     "allow_net": True,
+    "autovoice": False,
+    "voicedir": "voice",
 }
 
 
@@ -58,6 +60,9 @@ def parse_options_text(text, path="<memory>"):
     else:
         opt["dec"] = ["*.stm", "*.png", "*.jpg", "*.mp3", "*.wav", "*.ogg"]
     opt["allow_net"] = raw.get("allownet", "true").lower() not in ("false", "0", "no")
+    # 语音自动挂载：AutoVoice = "true" 时，有角色名的台词按命名约定自动找配音
+    opt["autovoice"] = raw.get("autovoice", "false").lower() in ("true", "1", "yes", "是")
+    opt["voicedir"] = raw.get("voicedir", "voice").strip() or "voice"
     opt["_raw"] = raw
     opt["_issues"] = issues
     return opt

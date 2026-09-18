@@ -46,10 +46,12 @@ from stmg import mod as modmod                            # noqa: E402
 TPL_PATH = os.path.join(ROOT, "stmg", "webplayer.html")
 ENGINE_DIR = os.path.join(ROOT, "stmg")
 
-# 网页版只带「解析 + 运行 + 桥」这几块，界面由 HTML 自己画，不需要 pygame
+# 网页版只带「解析 + 运行 + 桥」这几块，界面由 HTML 自己画，不需要 pygame。
+# 注意 save.py 不能漏：runtime.py 顶层就是 `from . import pack, save as savemod, ...`，
+# 少一个文件整个包在浏览器里 import 不起来（发布时看着一切正常，打开一片空白）。
 WEB_MODULES = ["errors.py", "markdown.py", "parser.py", "runtime.py",
                "pack.py", "crypto.py", "stdlib_api.py", "stmos.py",
-               "options.py", "web_bridge.py"]
+               "options.py", "save.py", "web_bridge.py"]
 
 WEB_INIT = '''# -*- coding: utf-8 -*-
 """STMG 引擎（网页版子集：解析 + 运行 + 网页桥，不含界面）。"""
@@ -122,15 +124,76 @@ def collect_assets(proj_dir):
 
 
 def engine_sources():
-    """网页版要带的 Python 源码：{虚拟路径: 源码}。"""
+    """网页版要带的 Python 源码：{虚拟路径: 源码}。
+
+    缺文件不抛异常，但一定要吼一声：引擎是整包 import 的，少一个模块
+    在浏览器里就直接 `ImportError`，玩家看到的是一片空白而不是报错。
+    """
     src = {"/stmg_root/stmg/__init__.py": WEB_INIT}
+    missing = []
     for name in WEB_MODULES:
         p = os.path.join(ENGINE_DIR, name)
         if not os.path.isfile(p):
+            missing.append(name)
             continue
         with open(p, "r", encoding="utf-8") as f:
             src["/stmg_root/stmg/" + name] = f.read()
+    if missing:
+        print("引擎警告：stmg/ 里少了 %s —— 网页版引擎会 import 失败，"
+              "先确认这些文件在不在" % "、".join(missing))
     return src
+
+
+def api_timeout_ms():
+    """网页版 R.api 的超时（毫秒）。
+
+    常量真正的家是 stmg/web_bridge.py（桌面版那边也读它）。这里从源码里
+    抠出来用，免得两边各写一份、改了一处忘了另一处。
+    不 import 它是因为 web_bridge 一被导入就会给 stdlib_api / stmos 打桩，
+    发布器不需要那个副作用。
+    """
+    try:
+        with open(os.path.join(ENGINE_DIR, "web_bridge.py"), "r",
+                  encoding="utf-8") as f:
+            m = re.search(r"^API_TIMEOUT_MS\s*=\s*(\d+)", f.read(), re.M)
+        if m:
+            return int(m.group(1))
+    except OSError:
+        pass
+    return 10000
+
+
+def _walk_nodes(node, visit):
+    """把剧本 AST 里每个语句节点都过一遍（不管嵌套多深）。"""
+    if isinstance(node, dict):
+        if "k" in node:
+            visit(node)
+        for v in node.values():
+            _walk_nodes(v, visit)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_nodes(v, visit)
+
+
+def scan_features(script):
+    """扫一遍剧本，数出「网页版和桌面版表现不一样」的能力用了几次。
+
+    只用来在发布结束时给作者提个醒：这两种写法在网页版是**降级**的
+    （联网要过 CORS、文件操作只在沙箱里），提前知道比发布完再发现强。
+    """
+    hits = {"api": 0, "os": 0}
+
+    def visit(nd):
+        k = nd.get("k")
+        if k == "stm_os":
+            hits["os"] += 1
+        elif (k == "call" and str(nd.get("obj") or "").upper() == "R"
+              and str(nd.get("method") or "").lower() == "api"):
+            hits["api"] += 1
+
+    _walk_nodes(getattr(script, "body", None), visit)
+    _walk_nodes(getattr(script, "ending", None), visit)
+    return hits
 
 
 def custom_css(ui, inline_assets):
@@ -352,6 +415,9 @@ def main(argv):
         "__STMG_PY__": js_lit(engine_sources() if engine == "wasm" else {}),
         "__STMG_SCRIPT__": js_lit(script_text),
         "__STMG_OPTIONS__": js_lit(options_text),
+        # 联网超时：JS 里要的是数字字面量，页面上那句提示要的是秒，各给一份
+        "__STMG_API_TIMEOUT__": str(api_timeout_ms()),
+        "__STMG_API_SEC__": ("%g" % (api_timeout_ms() / 1000.0)),
     }
     for k, v in repl.items():
         tpl = tpl.replace(k, v)
@@ -373,6 +439,18 @@ def main(argv):
         print("素材　　：%d 个文件，%s" % (asset_n, human(asset_size)))
     else:
         print("素材　　：已跳过（--no-assets）")
+
+    # ---- 网页版的能力差异提醒（剧本里真用到了才说） ----
+    feat = scan_features(script)
+    if feat["api"]:
+        print("联网提醒：剧本里有 %d 处 R.api。网页版的密钥在源码里必然可见，"
+              "跨域还要对方接口允许 CORS；%g 秒拿不到结果就当失败，剧情照常推进。"
+              % (feat["api"], api_timeout_ms() / 1000.0))
+    if feat["os"]:
+        print("文件提醒：剧本里有 %d 处 stm.os。网页版只会写进浏览器沙箱，"
+              "碰不到玩家真实磁盘；清空站点数据就找不回来了。"
+              % feat["os"])
+
     print("-" * 56)
     print("网页　　：%s" % html_path)
     print("大小　　：%s" % human(total + (0 if inline else asset_size)))

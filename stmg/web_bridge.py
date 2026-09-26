@@ -258,6 +258,7 @@ def _call_api(url="", key="", method="GET", params=None, data=None):
 
 
 def _web_read_file(path):
+    """stmos.read_file 的网页版实现：没引擎在跑就返回空，否则读沙箱。"""
     drv = _ACTIVE
     if drv is None:
         return False, ""
@@ -265,6 +266,7 @@ def _web_read_file(path):
 
 
 def _web_create_file(path):
+    """stmos.create_file 的网页版实现：转发到当前引擎的虚拟文件系统。"""
     drv = _ACTIVE
     if drv is None:
         return False, "网页版还没有引擎在跑"
@@ -272,6 +274,7 @@ def _web_create_file(path):
 
 
 def _web_remove_file(path):
+    """stmos.remove_file 的网页版实现：转发到当前引擎的虚拟文件系统。"""
     drv = _ACTIVE
     if drv is None:
         return False, "网页版还没有引擎在跑"
@@ -279,6 +282,7 @@ def _web_remove_file(path):
 
 
 def _web_revision_file(path, old, new):
+    """stmos.revision_file 的网页版实现：转发到当前引擎的虚拟文件系统。"""
     drv = _ACTIVE
     if drv is None:
         return False, "网页版还没有引擎在跑"
@@ -296,6 +300,13 @@ stmos.revision_file = _web_revision_file
 # Driver
 # --------------------------------------------------------------------------- #
 class Driver(object):
+    """网页版对外的引擎驱动器：一次只跑一个剧本（Pyodide 单线程）。
+
+    用法：Driver(script_text, options_text) 建好之后，反复调 next(answer)
+    把事件一条条吐给页面；页面把 R.api 的结果用 resolve_api() 送回来、
+    把沙箱改动用 vfs_changes() 取走、启动时用 load_vfs() 灌回。
+    详见文件头说明的「① R.api 异步」「② stm.os 沙箱」。
+    """
     def __init__(self, script_text, options_text="", script_path="/game/script.stm"):
         # script_path 只是个「引擎眼里的剧本路径」：Pyodide 里是 /game/script.stm
         # （MEMFS 里的假路径，成就 / CG 这类小文件写在那儿，重启就没了）。

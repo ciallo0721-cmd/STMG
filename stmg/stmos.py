@@ -150,7 +150,7 @@ def _mac_trash(path):
         os.makedirs(trash, exist_ok=True)
         dest = os.path.join(trash, os.path.basename(path))
         if os.path.exists(dest):
-            dest += ".stm"
+            dest += ".stm"            # 回收站里已有同名：加 .stm 避开覆盖
         shutil.move(path, dest)
         return True
     except Exception:                            # noqa: BLE001

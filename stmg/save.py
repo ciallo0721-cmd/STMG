@@ -53,14 +53,16 @@ def drop_thumb(root, n):
 
 
 def write_slot(root, n, snap):
-    snap = dict(snap)
-    snap["time"] = time.strftime("%Y-%m-%d %H:%M")
+    """把一帧存档快照 snap 写进槽 n（覆盖）。返回的还是这份带 time 的快照。"""
+    snap = dict(snap)                       # 复制一份，别改了调用方传进来的 dict
+    snap["time"] = time.strftime("%Y-%m-%d %H:%M")   # 存档格子上显示的时间戳
     with open(slot_path(root, n), "w", encoding="utf-8") as f:
         json.dump(snap, f, ensure_ascii=False, indent=1)
     return snap
 
 
 def read_slot(root, n):
+    """读槽 n 的快照 dict；文件不存在 / 解析不出返回 None（上层当空槽处理）。"""
     p = slot_path(root, n)
     if not os.path.isfile(p):
         return None
@@ -90,13 +92,18 @@ def delete_slot(root, n):
 
 
 def describe(snap):
+    """读档界面里给一个槽生成一行简介：时间 + 最近一句台词/选择的前 18 字。
+
+    history_tail 是快照里存的最近若干步历史，每项是 [步类型, 文本] 这样的
+    二元组；取最后一条的文本当「你上次停在这儿」的预览。
+    """
     if not snap:
         return "空档"
     tail = snap.get("history_tail") or []
     snippet = ""
     if tail:
         snippet = tail[-1][1] if isinstance(tail[-1], (list, tuple)) else str(tail[-1])
-    snippet = snippet.replace("\n", " ")[:18]
+    snippet = snippet.replace("\n", " ")[:18]      # 换行压成空格，截断避免超长
     return "%s  %s" % (snap.get("time", "?"), snippet)
 
 

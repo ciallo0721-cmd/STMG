@@ -1,14 +1,50 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""STMG 启动器 —— 管项目、跑游戏、查语法、打包、发布。
+"""STMG 图形化启动器 —— 项目管理 / 启动游戏 / 语法检查 / 无头试跑 / 打包 / 网页发布。
 
-界面用 CustomTkinter 写的（现代化外观、圆角、跟随系统深浅色）。
-启动器本身不需要 pygame，引擎坏了它照样能开。
+==========================================================================
+这个文件是干嘛的（干什么）
+==========================================================================
+它是 STMG 引擎的「图形化前端」，用 CustomTkinter（现代化外观、圆角、跟随
+系统深浅色）写的一个桌面窗口程序。玩家和开发者不用敲命令行，在这个窗口里
+就能完成所有日常操作：
 
-双击 STMG启动器.bat，或者：
+    * 项目管理：新建模板项目、添加已有项目、从列表移除（挪到回收处）
+    * 启动游戏：直接拉起引擎跑当前项目的剧本
+    * 开发操作：语法检查（check）、无头试跑（auto）、编辑剧本、可视化编辑、
+                美化包（mod）管理
+    * 发布操作：打包成可分发包、发布为能双击/丢上网页的 HTML、转为 Ren'Py
+    * 管理操作：打开文件夹、把引擎内嵌进项目（开放 stmg/ 供自定义）、清空日志
+
+启动器**只在自己的进程里画界面**，真正的引擎（stmg/）是作为一个「子进程」
+被拉起来跑剧本的（见 Launcher._run / Launcher.run_game）。所以：
+
+    * 启动器本身不依赖 pygame，引擎坏了它照样能开、照样能管项目；
+    * 所有「跑游戏 / 检查 / 打包 / 发布」都是拼一条命令行，交给子进程去执行，
+      子进程的标准输出被实时捞回启动器的「输出」日志区（见 Launcher._poll）。
+
+==========================================================================
+界面里几个关键类（谁是谁）
+==========================================================================
+    Launcher          主窗口：顶栏 + 左项目列表 + 右详情操作 + 下日志区
+    BaseDialog        所有弹窗的基类（居中、模态、防止 Windows 标题栏把窗口藏起来）
+    VisualEditor      行级 / 拖拽积木 / 半代码 三模式的可视化剧本编辑器
+    EndEditDialog / EditBlockDialog / EditOneFieldDialog  各种小编辑弹窗
+    InfoDialog / ConfirmDialog / NewProjectDialog         信息 / 确认 / 新建项目
+    ModDialog         美化包（外观主题）管理器
+    HtmlDialog        发布为 HTML 时的选项弹窗
+
+==========================================================================
+启动方式（被谁用）
+==========================================================================
+双击 STMG启动器.bat，或者手动：
 
     .venv\\Scripts\\python.exe launcher.py
+
+文件末尾的 main() 负责建目录、开窗口、挂关闭钩子、跑主循环。
 """
+
+
 
 import os
 import queue
@@ -72,7 +108,26 @@ LOG_FG = "#d1d1d6"
 
 
 class Launcher(ctk.CTk):
+    """图形化启动器主类（CustomTkinter）：项目管理、运行/检查/打包/网页发布、可视化编辑器入口。"""
     def __init__(self):
+        """主窗口的构造函数 —— 把启动器搭起来、准备好所有状态、画出界面。
+
+        做了哪些事（干什么）：
+            * 设定外观模式（跟随系统）和主题色；
+            * 初始化一堆实例状态：cfg（配置）、q（日志队列）、busy（是否忙）、
+              projects（项目列表）、current（当前选中项目）、_rows（列表行缓存）、
+              _fonts（字体缓存，避免反复 new 字体）；
+            * 设窗口标题/尺寸/最小尺寸/背景色；
+            * 调 _build() 画出全部控件；
+            * 调 refresh() 载入项目列表并选中一个；
+            * 用 self.after(120, self._poll) 起一个「心跳」，每 120ms 把日志队列
+              里的文字刷到输出区、并刷新忙碌状态。
+
+        参数：无（继承自 ctk.CTk）。
+        返回：无（构造即生效）。
+        删了会怎样：整个启动器没法实例化，main() 一建窗口就崩。
+        被谁调用：只有文件末尾的 main() 在启动时被调用一次。
+        """
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("blue")
         super().__init__()
@@ -96,6 +151,15 @@ class Launcher(ctk.CTk):
 
     # ------------------------------------------------------------------ #
     def f(self, size=13, bold=False):
+        """取一个 CustomTkinter 字体对象（带缓存，避免反复创建）。
+
+        参数：
+            size  字号（float 也行，Tk 只认整数，这里会 round 成 int，如 11.5→12）；
+            bold  是否加粗。
+        返回：一个 ctk.CTkFont 实例（同一 (size, bold) 只建一次，之后复用）。
+        删了会怎样：所有用到 self.f(...) 的界面文字都没法取字体，界面搭不起来。
+        被谁调用：界面里几乎所有 Label / Button 都用它来指定字体。
+        """
         # Tk 只认整数号，11.5 这种会直接报错，这里统一取整
         size = int(round(size))
         key = (size, bold)
@@ -109,6 +173,17 @@ class Launcher(ctk.CTk):
         return self._fonts[key]
 
     def _build(self):
+        """画出主窗口的全部控件（顶栏 / 左项目列表 / 右详情操作 / 下日志区）。
+
+        这是界面骨架的「施工图纸」：用 grid 布局把窗口切成 三行两列——
+        顶栏横跨两列、左侧项目面板、右侧详情与操作、底部输出日志区。
+        里面还内嵌了 section() 小帮手，把「开发 / 发布 / 管理」三组按钮按统一样式
+        批量生成（危险操作「移除项目」走红色样式，hero 项走蓝色高亮）。
+
+        参数：无。返回：无。
+        删了会怎样：主窗口 blank，啥按钮都没有，启动器等于废了。
+        被谁调用：只在 __init__ 里被调一次。
+        """
         self.grid_columnconfigure(0, weight=0, minsize=280)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -264,6 +339,15 @@ class Launcher(ctk.CTk):
     # 数据
     # ------------------------------------------------------------------ #
     def refresh(self, keep=None):
+        """重新载入项目列表，并重建左侧列表、选中其中一项。
+
+        参数：keep=之前选中的项目路径（字符串）；传 None 时优先保留 self.current，
+              都没有就选列表第一项。新建/移除项目后传 keep 让选中项不跳。
+        返回：无（直接改界面）。
+        删了会怎样：左侧列表永远不会刷新，新建/添加项目后看不到新项。
+        被谁调用：__init__、new_project、add_project、remove_project 等都会调它
+                  来「重画列表」。
+        """
         self.projects = proj.list_projects(self.cfg.get("recent"))
         for w in self.listbox.winfo_children():
             w.destroy()
@@ -295,6 +379,13 @@ class Launcher(ctk.CTk):
         self.show(target)
 
     def show(self, p):
+        """把某个项目「设为当前选中」，并刷新右侧详情与左侧高亮。
+
+        参数：p=项目信息字典（含 title/name/path/mtime_text/says/size_text 等）。
+        返回：无。
+        删了会怎样：点列表项不会更新右侧详情，也不会高亮选中行。
+        被谁调用：refresh() 在重建列表后调它来显示选中项。
+        """
         self.current = p
         for k, b in self._rows.items():
             if os.path.normcase(p["path"]) == k:
@@ -312,14 +403,37 @@ class Launcher(ctk.CTk):
     # 日志 / 状态
     # ------------------------------------------------------------------ #
     def log_line(self, text):
+        """往输出日志里追加一行（通过队列，线程安全）。
+
+        参数：text=要显示的文字（子进程输出、状态提示等都走它）。
+        返回：无。
+        删了会怎样：所有日志都没法写，子进程输出、操作提示全丢失。
+        被谁调用：几乎每个操作、子进程 worker、编辑器都调它来汇报进度。
+        """
         self.q.put(text)
 
     def clear_log(self):
+        """清空底部「输出」日志框。
+
+        参数：无。返回：无。
+        删了会怎样：「清空日志」按钮没反应，累积的日志清不掉。
+        被谁调用：界面「管理」分组里的「清空日志」按钮。
+        """
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
     def _poll(self):
+        """界面「心跳」：每 120ms 跑一次，把日志队列的文字刷到输出框、刷新忙碌状态。
+
+        它是靠 self.after(120, self._poll) 自己递归调自己，常驻运行。
+        通过队列（self.q）收日志，保证子线程也能安全地往 Tk 界面写文字
+        （Tk 不是线程安全的，必须回到主线程来改控件）。
+
+        参数：无。返回：无。
+        删了会怎样：子进程/编辑器的日志永远显示不出来，状态栏也不更新。
+        被谁调用：__init__ 里 after(120, ...) 启动，之后自己循环。
+        """
         dirty = False
         while True:
             try:
@@ -338,6 +452,7 @@ class Launcher(ctk.CTk):
         self.after(120, self._poll)
 
     def _run(self, args, title, capture=True):
+        """起一个后台子进程跑命令（_poll 读输出进日志区），用于运行/检查/打包等外部调用。"""
         if self.busy:
             InfoDialog(self, "等一下", "上一个任务还没跑完。")
             return
@@ -370,6 +485,7 @@ class Launcher(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _need(self):
+        """前置检查：没选中项目就打日志并返回 False（多数按钮入口先用它挡一下）。"""
         if not self.current:
             InfoDialog(self, "先选一个项目", "左边列表里点一个项目。")
             return False
@@ -386,6 +502,12 @@ class Launcher(ctk.CTk):
         return s if os.path.isfile(s) else START
 
     def run_game(self):
+        """直接拉起引擎跑当前项目的剧本（不检查、不试跑，就是玩）。
+
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「启动游戏」按钮没反应，玩家进不去游戏。
+        被谁调用：界面「启动游戏」大按钮。
+        """
         if not self._need():
             return
         script = proj.script_of(self.current["path"])
@@ -398,6 +520,14 @@ class Launcher(ctk.CTk):
             self.log_line("启动失败：%s" % e)
 
     def run_check(self):
+        """语法检查：拼 tools/check.py 命令行、交给子进程跑。
+
+        内嵌引擎的项目（带自己的 start.py）用项目自己的引擎查，这样改了
+        stmg/ 也能在检查里反映出来；普通项目用启动器根目录的 CHECK 脚本。
+        参数：无（读 self.current / self._local_start）。返回：无。
+        删了会怎样：「语法检查」按钮没反应，玩家没法提前发现剧本错。
+        被谁调用：界面「开发」分组的「语法检查」按钮。
+        """
         if not self._need():
             return
         if self._local_start() != START:
@@ -408,12 +538,27 @@ class Launcher(ctk.CTk):
         self._run([PY, CHECK, self.current["path"], "--verbose"], "语法检查")
 
     def run_auto(self):
+        """无头试跑：用引擎的 --auto 模式把整本剧本跑一遍（不弹窗口、不等人）。
+
+        用来快速验证「剧本能从头跑到尾、没有运行时崩溃」，比手动玩一遍快。
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「无头试跑」按钮没反应，没法快速回归测试。
+        被谁调用：界面「开发」分组的「无头试跑」按钮。
+        """
         if not self._need():
             return
         self._run([PY, self._local_start(), "--auto", proj.script_of(self.current["path"])],
                   "无头试跑")
 
     def embed_engine(self):
+        """把引擎内嵌进项目：拷一份 stmg/ 到项目目录，项目变成完全开放、可自定义。
+
+        内嵌后项目自带 start.py + stmg/，改 stmg/*.py 就能改引擎逻辑，只影响这个
+        项目、不动启动器本体。已经内嵌过就提示怎么更新（删掉重来）。
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「内嵌引擎」按钮没反应，没法在项目里自定义引擎。
+        被谁调用：界面「管理」分组的「内嵌引擎」按钮。
+        """
         if not self._need():
             return
         p = self.current["path"]
@@ -426,12 +571,27 @@ class Launcher(ctk.CTk):
                       "只影响这个项目，不用动启动器源码。" % len(done))
 
     def run_pack(self):
+        """打包发布：拼 stmenc/start.py 命令行，把项目打成可分发包。
+
+        产物默认落在 dist/<项目名>/（由 stmenc 负责具体打包格式）。
+        参数：无（读 self.current / HERE）。返回：无。
+        删了会怎样：「打包发布」按钮没反应，没法出可分发包。
+        被谁调用：界面「发布」分组的「打包发布」按钮。
+        """
         if not self._need():
             return
         out = os.path.join(HERE, "dist", self.current["name"])
         self._run([PY, PACK, self.current["path"], "--out", out], "打包发布")
 
     def run_html(self):
+        """发布为 HTML：弹选项窗（引擎/素材），拼 htmlpub.py 命令行生成网页版。
+
+        用户在弹窗里选渲染引擎（desktop/js）和素材处理（内联/外链/不要），
+        产物落在 dist/<项目名>_web/，双击 index.html 就能玩。
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「发布为 HTML」按钮没反应，没法出网页版。
+        被谁调用：界面「发布」分组的「发布为 HTML」按钮。
+        """
         if not self._need():
             return
         dlg = HtmlDialog(self)
@@ -448,6 +608,13 @@ class Launcher(ctk.CTk):
         self.log_line("产物：%s —— 双击 index.html 就能玩。" % out)
 
     def run_stm2renpy(self):
+        """转为 Ren'Py：拼 stm2renpy.py 命令行，把剧本翻成 .rpy 工程。
+
+        产物落在 dist/<项目名>_renpy/（这个是发布区里被置顶强调的功能）。
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「转为 Ren'Py」按钮没反应，没法出 Ren'Py 工程。
+        被谁调用：界面「发布」分组的「转为 Ren'Py」按钮（hero 高亮）。
+        """
         if not self._need():
             return
         out = os.path.join(HERE, "dist", "%s_renpy" % self.current["name"])
@@ -470,24 +637,55 @@ class Launcher(ctk.CTk):
             return []
 
     def run_mods(self):
+        """打开美化包管理器弹窗（ModDialog），在里面启用/编辑/检查/发布外观主题。
+
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「美化包」按钮没反应，没法管外观主题。
+        被谁调用：界面「开发」分组的「美化包」按钮。
+        """
         ModDialog(self)
 
     def run_modcheck(self, mid):
+        """检查某个美化包：拼 modcheck.py 命令行、交给子进程校验。
+
+        参数：mid=美化包 id。返回：无。
+        删了会怎样：ModDialog 里的「检查」按钮没反应。
+        被谁调用：ModDialog 内部按美化包 id 调它。
+        """
         self._run([PY, MODCHECK, mid], "检查美化包")
 
     def run_modpub(self, mid):
+        """发布某个美化包：拼 modpub.py 命令行，产出「外观主题」包（不是引擎本体）。
+
+        会额外提示：发布出来的是美化包（没有引擎/剧本/启动器），产物在 dist/mods。
+        参数：mid=美化包 id。返回：无。
+        删了会怎样：ModDialog 里的「发布」按钮没反应。
+        被谁调用：ModDialog 内部按美化包 id 调它。
+        """
         self._run([PY, MODPUB, mid], "发布美化包")
         self.log_line("注意：发布出来的是「美化包」（外观主题），不是 STMG 本体 —— "
                       "里面没有引擎、没有剧本、没有启动器。")
         self.log_line("产物在：%s" % os.path.join(HERE, "dist", "mods"))
 
     def open_mod_dir(self):
+        """用系统文件管理器打开美化包所在的 mod/ 目录（方便手动放/改主题）。
+
+        参数：无。返回：无。
+        删了会怎样：ModDialog 里「打开目录」类入口没反应。
+        被谁调用：ModDialog 内相关按钮。
+        """
         try:
             os.startfile(modmod.find_dir())             # noqa: S606 - Windows 专用
         except Exception as e:                         # noqa: BLE001
             self.log_line("打不开：%s" % e)
 
     def edit_script(self):
+        """用系统默认编辑器打开当前项目的 script.stm（外部编辑器，不在启动器里改）。
+
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「编辑剧本」按钮没反应，得自己去文件夹找文件。
+        被谁调用：界面「开发」分组的「编辑剧本」按钮。
+        """
         if not self._need():
             return
         p = proj.script_of(self.current["path"])
@@ -498,6 +696,13 @@ class Launcher(ctk.CTk):
             self.log_line("打不开：%s" % e)
 
     def visual_edit(self):
+        """打开可视化编辑器（VisualEditor）。不在按钮回调里同步建窗口，挪到 after
+        里建——这样如果建窗口时卡死/报错，能被 _open_visual_editor 的兜底日志抓到，
+        不至于整个启动器跟着卡。
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「可视化编辑」按钮没反应。
+        被谁调用：界面「开发」分组的「可视化编辑」按钮。
+        """
         if not self._need():
             return
         p = proj.script_of(self.current["path"])
@@ -506,6 +711,14 @@ class Launcher(ctk.CTk):
         self.after(10, self._open_visual_editor, p)
 
     def _open_visual_editor(self, p):
+        """真正实例化 VisualEditor（在 after 里被调，避开按钮回调的同步建窗陷阱）。
+
+        持住引用（self._editor）防止窗口被 GC 回收；建窗成功/失败的日志都写进
+        输出区——tkinter 回调异常只进 stderr、玩家看不到，这里兜底写进日志。
+        参数：p=剧本路径。返回：无。
+        删了会怎样：visual_edit 没法真正把窗口建起来。
+        被谁调用：visual_edit() 用 self.after(10, ...) 延迟调它。
+        """
         try:
             ed = VisualEditor(self, p)
             self._editor = ed          # 持住引用，防止窗口被垃圾回收
@@ -523,6 +736,12 @@ class Launcher(ctk.CTk):
                          _tb.format_tb(tb)[-1].strip() if tb else ""))
 
     def open_folder(self):
+        """用系统文件管理器打开当前项目所在的文件夹。
+
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「打开文件夹」按钮没反应。
+        被谁调用：界面「管理」分组的「打开文件夹」按钮。
+        """
         if not self._need():
             return
         try:
@@ -531,6 +750,14 @@ class Launcher(ctk.CTk):
             self.log_line("打不开：%s" % e)
 
     def new_project(self):
+        """新建项目：弹 NewProjectDialog 取名字/标题/分辨率，调 proj.create_project 生成模板。
+
+        生成后刷新列表并选中新项目，顺手提示 custom/ 里能改界面、custom/markdown.py
+        能加内联标记。建不了（路径冲突等）就弹 InfoDialog 说明。
+        参数：无。返回：无。
+        删了会怎样：「新建项目」按钮没反应，没法建模板项目。
+        被谁调用：界面左下「新建项目」按钮。
+        """
         dlg = NewProjectDialog(self)
         if not dlg.result:
             return
@@ -547,6 +774,13 @@ class Launcher(ctk.CTk):
         self.refresh(keep=path)
 
     def add_project(self):
+        """添加已有项目：文件对话框选一个含 script.stm 的文件夹，加进最近列表并刷新。
+
+        选的文件夹没有 script.stm 就提示「不是项目」；成功则 push_recent 后 refresh。
+        参数：无。返回：无。
+        删了会怎样：界面左下「添加…」按钮没反应。
+        被谁调用：界面左下「添加…」按钮。
+        """
         from tkinter import filedialog
         d = filedialog.askdirectory(title="选一个含 script.stm 的项目文件夹")
         if not d:
@@ -559,6 +793,14 @@ class Launcher(ctk.CTk):
         self.log_line("已添加：%s" % d)
 
     def remove_project(self):
+        """移除项目：从列表移走（不是删除）。外部项目只从 recent 删记录；
+        项目目录内的项目整个挪到 projects/_trash/，随时能拖回来。
+
+        先弹 ConfirmDialog 确认（文案里强调「不是删除」），按结果决定只改配置还是挪文件夹。
+        参数：无（读 self.current）。返回：无。
+        删了会怎样：「移除项目」按钮没反应，列表里项目去不掉。
+        被谁调用：界面「管理」分组的「移除项目」按钮。
+        """
         if not self._need():
             return
         p = self.current
@@ -584,6 +826,12 @@ class Launcher(ctk.CTk):
         self.refresh(keep=None)
 
     def on_mode(self, value):
+        """顶栏外观模式下拉：把「跟随系统/浅色/深色」映射到 system/light/dark 并应用。
+
+        参数：value=下拉当前选中的文字。返回：无。
+        删了会怎样：切换深浅色没反应。
+        被谁调用：顶栏 CTkSegmentedButton 的 command。
+        """
         ctk.set_appearance_mode({"跟随系统": "system", "浅色": "light",
                                  "深色": "dark"}[value])
 
@@ -673,6 +921,15 @@ _ASSET_CALL_RE = re.compile(
 
 
 def _match_paren(text, i):
+    """从 i（一个 '(' 的位置）开始向右数圆括号，返回与之配对的 ')' 的下标。
+
+    只数圆括号，不数 {} []——因为 STMG 剧本里 {} [] 是排版标记不是代码块，
+    不能按它们配对（避免误判素材调用边界）。数不到就返回 len(text)。
+    参数：text=剧本文本；i=起始 '(' 的下标。
+    返回：配对的 ')' 下标（找不到则 len(text)）。
+    删了会怎样：scan_asset_refs 没法正确截取素材调用的参数，素材扫描全错。
+    被谁调用：scan_asset_refs()（截取 S.xxx(...) 的参数段）。
+    """
     depth = 0
     while i < len(text):
         c = text[i]
@@ -750,7 +1007,19 @@ def list_asset_dir(base_dir):
 
 
 class BaseDialog(ctk.CTkToplevel):
+    """所有弹窗的基类：模态、居中、防 Windows 标题栏把窗口藏起来。
+
+    统一处理弹窗的通用套路（禁用 CTk 的标题栏 withdraw 杂技、设 result、
+    居中、grab_set 模态），子类只管往里塞内容。
+    """
     def __init__(self, master, title, w=420, h=260):
+        """构造弹窗基座：禁用标题栏杂技、设标题/背景/模态、定时居中+grab。
+
+        参数：master=父窗口；title=窗口标题；w/h=尺寸（默认 420x260）。
+        返回：无。
+        删了会怎样：所有弹窗（确认/信息/新建/编辑…）都建不起来。
+        被谁调用：各弹窗子类的 super().__init__。
+        """
         # 禁用 CTk 的 Windows 标题栏 withdraw 杂技（会把窗口藏起来不还）
         self._deactivate_windows_window_header_manipulation = True
         super().__init__(master)
@@ -764,6 +1033,12 @@ class BaseDialog(ctk.CTkToplevel):
         self.after(140, self.grab_set)
 
     def _center(self):
+        """把弹窗居中到父窗口上方三分之一处（update_idletasks 后取真实尺寸算偏移）。
+
+        参数：无（读 self.master / self 尺寸）。返回：无。
+        删了会怎样：弹窗可能飘在屏幕角落，不在父窗口中间。
+        被谁调用：BaseDialog.__init__ 里 after(60, ...) 延迟调；子类也可能调。
+        """
         try:
             self.update_idletasks()
             px, py = self.master.winfo_rootx(), self.master.winfo_rooty()
@@ -783,6 +1058,16 @@ class VisualEditor(BaseDialog):
     """
 
     def __init__(self, app, path):
+        """可视化编辑器的构造：建窗口基座、初始化状态、搭 UI、加载文件、挂保险。
+
+        除了普通初始化，还做了几件「防死锁」的保险：禁用标题栏杂技（防 CTk 在
+        深色模式把窗口永久藏起来）、绑定 <Destroy> 销毁时释放 grab+杀预览进程、
+        多个 after 兜底强制窗口可见并查 grab 归属。最后 log_line 打各阶段 OK 便于定位。
+        参数：app=主启动器实例；path=要编辑的剧本路径。
+        返回：无。
+        删了会怎样：可视化编辑器窗口建不起来，或建起来后卡死/锁死主应用。
+        被谁调用：Launcher._open_visual_editor 用 self.after(10, ...) 调它。
+        """
         # CTk 在 Windows 上改标题栏深色时会 withdraw 整个窗口再择机恢复；
         # 外观模式回调会在窗口显示并 grab 之后再次触发这个流程，把窗口
         # 永久藏起来（grab 还握着 → 整个应用点哪都没反应）。
@@ -811,6 +1096,12 @@ class VisualEditor(BaseDialog):
     # 模式切换与整体布局
     # ------------------------------------------------------------------ #
     def _set_mode(self, mode):
+        """切换三种编辑模式（line/blocks/code）：离开积木模式先把树写回行，再重建 UI。
+
+        参数：mode=目标模式字符串（"line"/"blocks"/"code"）。返回：无。
+        删了会怎样：顶栏模式按钮没反应，三种编辑视图切不过去。
+        被谁调用：顶栏模式按钮的 command（lambda 包装）。
+        """
         if mode == self.mode:
             return
         if self.mode == "blocks":
@@ -819,6 +1110,14 @@ class VisualEditor(BaseDialog):
         self._build_ui()
 
     def _build_ui(self):
+        """重建编辑器整个界面：顶栏（路径+操作按钮+模式切换）、左素材面板、右正文区。
+
+        先销毁旧控件再重建（模式切换时复用）。操作按钮含预览/保存/语法检查/刷新；
+        模式按钮高亮当前模式。根据 self.mode 决定右侧画行级/积木/半代码哪一种。
+        参数：无（读 self.mode / self.app）。返回：无。
+        删了会怎样：编辑器界面画不出来，或模式切换后右侧内容不刷新。
+        被谁调用：__init__ 初始化时、_set_mode 切换模式时。
+        """
         for w in self.winfo_children():
             w.destroy()
         app = self.app
@@ -868,6 +1167,14 @@ class VisualEditor(BaseDialog):
             self._build_line_body()
 
     def _build_line_body(self):
+        """行级模式的正文区：左=带类型标注的行列表（可点选/双击载入），右=编辑框+操作。
+
+        行列表每行显示「行号 │ 类型 │ 内容」（类型由 _classify_line 打标签）；
+        右侧是文本框 + 应用到选中行/插入/删除 四个按钮。最后 refresh_list(0) 填充列表。
+        参数：无（读 self.lines）。返回：无。
+        删了会怎样：行级编辑视图空白，没法逐行改剧本。
+        被谁调用：_build_ui 在 mode=="line" 时调它。
+        """
         app = self.app
         body = ctk.CTkFrame(self._body_host, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
@@ -914,6 +1221,12 @@ class VisualEditor(BaseDialog):
         self.refresh_list(0)
 
     def _ensure_visible(self):
+        """兜底保险：如果窗口被 CTk 藏成 withdrawn，强制 deiconify/lift/聚焦拉回；
+        如果窗口不可见，干脆释放模态 grab（宁可不要模态也别锁死整个应用）。
+        参数：无。返回：无。
+        删了会怎样：深色模式下窗口可能被永久藏起来，玩家看到的是卡死的启动器。
+        被谁调用：__init__ 里 for ms in (400,900,1500): after(ms, ...) 多次延迟调。
+        """
         try:
             if self.state() == "withdrawn":
                 self.deiconify()
@@ -930,12 +1243,26 @@ class VisualEditor(BaseDialog):
             pass
 
     def _grab_status(self):
+        """把当前 grab 归属（谁握着模态）打进主窗口日志，便于定位「点哪都没反应」。
+
+        参数：无。返回：无。
+        删了会怎样：grab 死锁时少一条诊断日志，排查变难。
+        被谁调用：__init__ 里 after(300, ...) 延迟调。
+        """
         try:
             self.app.log_line("可视化编辑：grab 归属 = %s" % (self.grab_current(),))
         except Exception as e:                         # noqa: BLE001
             self.app.log_line("可视化编辑：grab 查询失败 %r" % e)
 
     def _safe_destroy(self, ev=None):
+        """窗口销毁钩子：杀掉预览进程、释放模态 grab、打日志。
+
+        子组件销毁也会冒泡这个事件，所以用 ev.widget is not self 过滤，只在编辑器
+        自己销毁时处理，避免误杀。崩了也吞异常，绝不在这里再抛错。
+        参数：ev=tkinter Destroy 事件（可 None）。返回：无。
+        删了会怎样：关编辑器时预览进程变孤儿、或 grab 没释放锁死主应用。
+        被谁调用：__init__ 里 bind("<Destroy>", ...) 触发。
+        """
         if ev is not None and ev.widget is not self:
             return      # 子组件销毁也会冒泡，只在自己销毁时处理
         # 关编辑器时务必杀掉预览进程，绝不留下孤儿进程
@@ -1023,6 +1350,14 @@ class VisualEditor(BaseDialog):
     # 素材面板（#4）：左树按 ASSET_DIRS 分类、懒加载子目录，双击插入调用
     # ------------------------------------------------------------------ #
     def _build_asset_panel(self, parent):
+        """搭左侧「素材库」面板：分类根 + Treeview 树 + 缺失计数标签 + 懒加载绑定。
+
+        按 stmg.project.ASSET_DIRS 分根（bg/png/music/gui/custom），树展开时
+        懒加载子目录；双击文件节点按类型插入对应调用；顶部「缺失」计数可点击看清单。
+        参数：parent=右正文区外的主容器。返回：frame（素材面板容器）。
+        删了会怎样：编辑器没有素材面板，没法可视化浏览/插入素材。
+        被谁调用：_build_ui 里调它。
+        """
         from tkinter import ttk
         app = self.app
         frame = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=12)
@@ -1068,6 +1403,7 @@ class VisualEditor(BaseDialog):
             tree.insert("", "end", iid=iid, text=cat, open=False)
 
     def _on_asset_open(self, _e=None):
+        """素材树单击展开：拿到当前焦点节点并懒加载其子目录。"""
         iid = self._asset_tree.focus()
         if iid:
             self._expand_asset_node(iid)
@@ -1096,6 +1432,7 @@ class VisualEditor(BaseDialog):
             tree.insert(iid, "end", iid=ciid, text=name)
 
     def _on_asset_double(self, _e=None):
+        """素材树双击：若是文件（非目录）就把对应调用插进当前文本框。"""
         iid = self._asset_tree.focus()
         if not iid:
             return
@@ -1117,6 +1454,12 @@ class VisualEditor(BaseDialog):
             self.app.log_line("素材插入：没有可插入的文本框")
 
     def _insert_into(self, widget, text):
+        """往某个 tk 文本框（entry/code_box）的光标处插入文本，并打日志。
+
+        参数：widget=目标文本框；text=要插入的文本。返回：无。
+        删了会怎样：素材面板双击插入、积木插入走不通。
+        被谁调用：_asset_insert 按模式选 entry 或 code_box 调它。
+        """
         try:
             widget.insert(widget.index("insert"), text)
             self.app.log_line("已插入素材调用：%s" % text.strip())
@@ -1164,6 +1507,14 @@ class VisualEditor(BaseDialog):
 
     # ---- 文件 ---- #
     def reload_file(self):
+        """从磁盘重新读剧本进 self.lines（utf-8-sig 容 BOM），按模式刷新对应视图。
+
+        读不了就打日志并 destroy 窗口；读完按 mode 调 _tree_from_lines/_fill_code/
+        refresh_list 刷新，并刷新素材面板「缺失」计数。
+        参数：无（读 self.path）。返回：无。
+        删了会怎样：「刷新」按钮没反应，编辑器不重载磁盘最新内容。
+        被谁调用：__init__ 初始化、顶栏「刷新」按钮、保存后等。
+        """
         try:
             with open(self.path, "r", encoding="utf-8-sig") as f:
                 self.lines = f.read().splitlines()
@@ -1189,6 +1540,12 @@ class VisualEditor(BaseDialog):
                 pass
 
     def refresh_list(self, keep=0):
+        """重画左侧行列表：每行「行号│类型│内容」，并选中 keep 指定行。
+
+        参数：keep=要选中的行下标（默认 0）。返回：无。
+        删了会怎样：行级视图不刷新，改完行列表看不到变化。
+        被谁调用：reload_file / do_replace / do_insert_* / do_delete。
+        """
         self.listbox.delete(0, tk.END)
         for i, ln in enumerate(self.lines, 1):
             self.listbox.insert(tk.END, "%4d │ %-4s │ %s" % (i, _classify_line(ln), ln))
@@ -1197,26 +1554,31 @@ class VisualEditor(BaseDialog):
             self.listbox.selection_set(min(keep, len(self.lines) - 1))
 
     def _sel(self):
+        """返回行列表中当前选中的下标（browse 模式取最后一项），没选返回 None。"""
         sel = self.listbox.curselection()
         # browse 模式下鼠标点击只会产生单项；多项只可能是程序叠加，
         # 取最后一项（最近一次 set 的行）。
         return sel[-1] if sel else None
 
     def _entry_text(self):
+        """读出行级编辑框（tk.Text）的全部文本，去掉末尾换行。"""
         return self.entry.get("1.0", "end").rstrip("\n")
 
     def on_select(self, _e=None):
+        """行列表选择变化：更新顶部「第 N 行 · 类型」标签。"""
         i = self._sel()
         if i is not None:
             self.tag_label.configure(text="第 %d 行 · %s" % (i + 1, _classify_line(self.lines[i])))
 
     def load_into_entry(self):
+        """把选中行的原文读进编辑框，供修改。"""
         i = self._sel()
         if i is not None:
             self.entry.delete("1.0", "end")
             self.entry.insert("1.0", self.lines[i])
 
     def do_replace(self):
+        """用编辑框内容替换选中行，并重画行列表（保持选中该行）。"""
         i = self._sel()
         if i is None:
             return
@@ -1224,17 +1586,20 @@ class VisualEditor(BaseDialog):
         self.refresh_list(keep=i)
 
     def do_insert_after(self):
+        """在选中行之后插入编辑框内容（没选中就追加到末尾）。"""
         i = self._sel()
         self.lines.insert((i + 1) if i is not None else len(self.lines),
                           self._entry_text())
         self.refresh_list(keep=(i + 1) if i is not None else len(self.lines) - 1)
 
     def do_insert_before(self):
+        """在选中行之前插入编辑框内容（没选中就插到开头）。"""
         i = self._sel()
         self.lines.insert(i if i is not None else 0, self._entry_text())
         self.refresh_list(keep=i if i is not None else 0)
 
     def do_delete(self):
+        """删除选中行，并重画行列表。"""
         i = self._sel()
         if i is None:
             return
@@ -1242,6 +1607,7 @@ class VisualEditor(BaseDialog):
         self.refresh_list(keep=i)
 
     def do_save(self):
+        """保存：积木模式先 _blk_sync_back 写回正文段，再 .bak 备份后覆盖写盘。"""
         if self.mode == "blocks":
             self._blk_sync_back()
         bak = self.path + ".bak"
@@ -1257,6 +1623,7 @@ class VisualEditor(BaseDialog):
             self.app.log_line("可视化编辑：保存失败：%s" % e)
 
     def do_check(self):
+        """保存后用 tools/check.py 跑语法检查，把结果尾巴弹 InfoDialog 给用户。"""
         self.do_save()
         root = os.path.dirname(self.path)
         try:
@@ -1349,6 +1716,7 @@ class VisualEditor(BaseDialog):
                   "配置": "#98a0b8", "其它": "#98a0b8"}
 
     def _blk_desc(self, blk):
+        """把积木块翻译成人话摘要（用于积木卡片/画布节点上的文字）。"""
         ln = self.lines[blk["start"]].strip()
         kind = blk["kind"]
         if kind == "标签":
@@ -1377,6 +1745,7 @@ class VisualEditor(BaseDialog):
         return ln[:20] if ln else kind
 
     def _build_block_body(self):
+        """搭积木模式界面：左侧积木箱 + 顶部提示条 + 中间无限画布。"""
         app = self.app
         body = ctk.CTkFrame(self._body_host, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
@@ -1460,6 +1829,7 @@ class VisualEditor(BaseDialog):
         self._canvas_render()
 
     def _refresh_blocks(self):
+        """重画右侧积木列表：每个块一张卡片（颜色条+摘要+↑↓✕），含结局段卡。"""
         import re as _re  # noqa: F401  (re 已在模块级)
         for w in self.blk_list.winfo_children():
             w.destroy()
@@ -1515,10 +1885,12 @@ class VisualEditor(BaseDialog):
         hint.pack(fill="x", padx=8, pady=8)
 
     def _blk_pick(self, i):
+        """选中第 i 个积木块（点卡片触发），重画列表高亮。"""
         self._blk_sel = i
         self._refresh_blocks()
 
     def _blk_insert_pos(self):
+        """返回新积木该插入的行位置：选中块之后，否则正文段末尾。"""
         body, blocks = self._analyze_blocks()
         if self._blk_sel is not None and 0 <= self._blk_sel < len(blocks):
             return blocks[self._blk_sel]["end"]
@@ -1537,6 +1909,7 @@ class VisualEditor(BaseDialog):
         self._refresh_blocks()
 
     def _blk_move(self, i, delta):
+        """把第 i 个积木块上移/下移一格（与相邻块整体交换行区间）。"""
         _body, blocks = self._analyze_blocks()
         j = i + delta
         if not (0 <= j < len(blocks)):
@@ -1553,6 +1926,7 @@ class VisualEditor(BaseDialog):
         self._refresh_blocks()
 
     def _blk_del(self, i):
+        """删除第 i 个积木块（连同其所有行），重画列表。"""
         _body, blocks = self._analyze_blocks()
         if not (0 <= i < len(blocks)):
             return
@@ -1561,6 +1935,7 @@ class VisualEditor(BaseDialog):
         self._refresh_blocks()
 
     def _edit_ending(self):
+        """编辑/新建结局段（< ... >）：有就弹 EndEditDialog，没有就追加一段。"""
         _h, _b, ending = self._find_secs()
         if ending:
             a, b = ending
@@ -1675,6 +2050,7 @@ class VisualEditor(BaseDialog):
         return {"t": "call", "raw": s}, i + 1
 
     def _tree_to_body_lines(self):
+        """把积木树序列化回 .stm 正文段行列表（帽子→堆叠，C 形递归展开）。"""
         out = []
         for hat in self._tree:
             if hat.get("emit", True):
@@ -1684,6 +2060,7 @@ class VisualEditor(BaseDialog):
         return out
 
     def _emit_node(self, node, ind, out):
+        """递归把一个积木节点写成一行（C 形缩进子块），追加进 out 列表。"""
         pad = "    " * ind
         t = node["t"]
         if t == "hat":
@@ -1726,6 +2103,7 @@ class VisualEditor(BaseDialog):
 
     # ---------- 渲染 ---------- #
     def _node_text(self, node):
+        """积木节点 → 画布上显示的人话文字（各类节点分别格式化）。"""
         t = node["t"]
         if t == "hat":
             if node["label"].lower() == "start":
@@ -1753,6 +2131,7 @@ class VisualEditor(BaseDialog):
         return "?"
 
     def _canvas_render(self):
+        """重画整个积木画布：清屏→剔除异常顶层节点→逐帽子画堆→记录命中区。"""
         cv = self.canvas
         cv.delete("all")
         # 防御：树顶层只允许带 stack 的帽子节点，异常节点剔除并记日志
@@ -1781,6 +2160,7 @@ class VisualEditor(BaseDialog):
             self._last_bottom = y
 
     def _draw_hat(self, hat, x, y):
+        """画帽子积木（事件黄块）及其子堆叠；注册命中区与落点堆区。"""
         cv = self.canvas
         w = max(170, 18 + 7 * len(self._node_text(hat)))
         cv.create_rectangle(x, y, x + w, y + 24, fill=self._CV_HAT,
@@ -1809,6 +2189,7 @@ class VisualEditor(BaseDialog):
         return cy
 
     def _draw_node(self, node, x, y):
+        """画单个积木节点：C 形(if/else/choose)画头+肚子，其余画彩色块。"""
         cv = self.canvas
         t = node["t"]
         if t in ("if", "else"):
@@ -1874,12 +2255,14 @@ class VisualEditor(BaseDialog):
 
     # ---------- 命中与拖拽 ---------- #
     def _hit_top(self, x, y):
+        """命中测试：返回点 (x,y) 命中的最上层积木（用于点选/拖起）。"""
         for h in reversed(self._hits):
             if h["x1"] <= x <= h["x2"] and h["y1"] <= y <= h["y2"]:
                 return h
         return None
 
     def _remove_node(self, node):
+        """从积木树里摘掉 node，返回 (所在列表, 下标) 以便拖拽后弹回原位。"""
         def walk(lst):
             for i, n in enumerate(lst):
                 if n is node:
@@ -1911,6 +2294,7 @@ class VisualEditor(BaseDialog):
         return None
 
     def _drop_node_at(self, node, x, y):
+        """把拖起的积木放到 (x,y)：命中堆区就插入，落空则帽子置顶/普通弹回原位。"""
         f = self._find_drop(node, x, y)
         if f is None:
             if node["t"] == "hat":          # 帽子永远在顶层
@@ -1927,6 +2311,7 @@ class VisualEditor(BaseDialog):
 
     # ---------- 放置指示器（白色实线包裹轮廓 + 呼吸动画） ---------- #
     def _drag_start(self):
+        """进入拖拽态：开呼吸动画定时器，准备画放置指示器。"""
         self._dragging = True
         self._hint_phase = 0
         try:
@@ -1937,6 +2322,7 @@ class VisualEditor(BaseDialog):
         self._hint_job = self.after(180, self._hint_anim)
 
     def _drag_stop(self):
+        """结束拖拽态：取消呼吸动画定时器，清掉放置指示器。"""
         self._dragging = False
         try:
             if getattr(self, "_hint_job", None):
@@ -1947,6 +2333,7 @@ class VisualEditor(BaseDialog):
         self.canvas.delete("hint")
 
     def _hint_anim(self):
+        """呼吸动画一帧：推进相位并重画指示器，未拖拽就停。"""
         if not getattr(self, "_dragging", False):
             return
         self._hint_phase += 1
@@ -1954,6 +2341,7 @@ class VisualEditor(BaseDialog):
         self._hint_job = self.after(180, self._hint_anim)
 
     def _show_drop_hint(self, node, x, y):
+        """算放置指示器的位置（堆区内插在两块之间，或落空时贴底部）。"""
         cv = self.canvas
         cv.delete("hint")
         f = self._find_drop(node, x, y)
@@ -1976,6 +2364,7 @@ class VisualEditor(BaseDialog):
         self._hint_draw()
 
     def _hint_draw(self):
+        """画放置指示器：白色矩形轮廓 + 四角方块，线宽随呼吸相位一粗一细。"""
         geom = getattr(self, "_hint_geom", None)
         if not geom:
             return
@@ -1990,6 +2379,7 @@ class VisualEditor(BaseDialog):
                                 outline="", tags="hint")
 
     def _cv_press(self, e):
+        """画布按下：命中积木就把它从树摘下、记为拖拽节点、起拖。"""
         if getattr(self, "_drag_node", None):
             return                          # 已经在拖了，别把别的块也拿走
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
@@ -2001,6 +2391,7 @@ class VisualEditor(BaseDialog):
             self._drag_start()
 
     def _cv_motion(self, e):
+        """画布拖动中：画跟随光标的幽灵块，并实时更新放置指示器。"""
         node = getattr(self, "_drag_node", None)
         if not node:
             return
@@ -2014,6 +2405,7 @@ class VisualEditor(BaseDialog):
         self._show_drop_hint(node, x, y)
 
     def _cv_release(self, e):
+        """画布松开：停拖并把积木放到落点（落不进堆就弹回原位）。"""
         node = getattr(self, "_drag_node", None)
         if not node:
             return
@@ -2023,6 +2415,7 @@ class VisualEditor(BaseDialog):
                            self.canvas.canvasy(e.y))
 
     def _cv_double(self, e):
+        """画布双击：积木→改内容弹窗；选项→改选项文字；加选项→追加一项。"""
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
         hit = self._hit_top(x, y)
         if not hit:
@@ -2041,6 +2434,7 @@ class VisualEditor(BaseDialog):
             self._canvas_render()
 
     def _cv_right(self, e):
+        """画布右键：删积木（Start 帽子和不可 emit 的帽子不让删）。"""
         x, y = self.canvas.canvasx(e.x), self.canvas.canvasy(e.y)
         hit = self._hit_top(x, y)
         if hit and hit["part"] == "block":
@@ -2053,10 +2447,12 @@ class VisualEditor(BaseDialog):
             self._canvas_render()
 
     def _cv_wheel(self, e):
+        """画布滚轮：纵向滚动。"""
         self.canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
 
     # ---------- 调色板拖拽 ---------- #
     def _pal_press(self, mk):
+        """调色板按下：实例化积木模板（自动命名消息N→消息N）、记拖拽节点、起拖。"""
         node = mk()
         n = len([h for h in self._tree if h.get("emit")]) if getattr(self, "_tree", None) else 0
         if node.get("label") == "消息N":
@@ -2067,6 +2463,7 @@ class VisualEditor(BaseDialog):
         self._drag_start()
 
     def _pal_motion(self, e):
+        """调色板拖动中：在画布上画跟随光标的幽灵块，并实时更新放置指示器。"""
         node = getattr(self, "_pal_node", None)
         if not node:
             return
@@ -2084,6 +2481,7 @@ class VisualEditor(BaseDialog):
                                  self.canvas.canvasy(0) + py)
 
     def _pal_release(self, e):
+        """调色板松开：把新积木放到落点（落不进任何堆就弹回原位）。"""
         node = getattr(self, "_pal_node", None)
         if not node:
             return
@@ -2097,6 +2495,7 @@ class VisualEditor(BaseDialog):
 
     # ---------- 双击编辑 ---------- #
     def _edit_node_dialog(self, node):
+        """双击积木→按类型弹编辑弹窗（台词/调用/条件/标签/选项等字段）。"""
         t = node["t"]
         if t == "say":
             fields = [("角色（留空 = 旁白）", node.get("who", ""), "who"),
@@ -2120,6 +2519,7 @@ class VisualEditor(BaseDialog):
         EditBlockDialog(self.app, node, fields, self)
 
     def _apply_node_edit(self, node, values):
+        """把编辑弹窗的字段写回积木节点（选项按逗号拆分，文本去引号）。"""
         for key, val in values:
             if key == "options":
                 node["options"] = [o.strip() for o in re.split(r"[，,]", val)
@@ -2136,6 +2536,7 @@ class VisualEditor(BaseDialog):
     # 半代码模式
     # ------------------------------------------------------------------ #
     def _build_code_body(self):
+        """搭半代码模式界面：全屏源码文本框 + 还原/应用按钮。"""
         app = self.app
         body = ctk.CTkFrame(self._body_host, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=14, pady=6)
@@ -2158,10 +2559,12 @@ class VisualEditor(BaseDialog):
                       command=self._apply_code).pack(side="right")
 
     def _fill_code(self):
+        """把当前 self.lines 填进半代码文本框（还原按钮用）。"""
         self.code_box.delete("1.0", "end")
         self.code_box.insert("1.0", "\n".join(self.lines))
 
     def _apply_code(self):
+        """把半代码文本框的内容写回 self.lines（不直接落盘，记得再点保存）。"""
         txt = self.code_box.get("1.0", "end").rstrip("\n")
         self.lines = txt.splitlines() if txt else []
         self.app.log_line("可视化编辑：半代码已应用（%d 行），记得点「保存」" % len(self.lines))
@@ -2171,6 +2574,7 @@ class EndEditDialog(BaseDialog):
     """编辑「当 end 部分结束时」的结局内容。"""
 
     def __init__(self, app, editor, a, b):
+        """结局编辑弹窗：文本框预填 [a,b) 行，确定写回 editor.lines。"""
         self._deactivate_windows_window_header_manipulation = True
         super().__init__(app, "编辑 end 部分（结局画面）", 620, 460)
         self.editor = editor
@@ -2193,6 +2597,7 @@ class EndEditDialog(BaseDialog):
                       command=self._save).pack(side="right", padx=(0, 8))
 
     def _save(self):
+        """把结局文本框内容写回 editor.lines 的 [a,b)，记日志并关窗。"""
         txt = self.box.get("1.0", "end").rstrip("\n")
         self.editor.lines[self.a:self.b] = txt.splitlines() if txt else []
         self.editor.app.log_line("可视化编辑：end 部分已更新，记得点「保存」")
@@ -2203,6 +2608,7 @@ class EditBlockDialog(BaseDialog):
     """编辑一个积木的字段（say 的角色/台词、if 的条件、choose 的选项…）。"""
 
     def __init__(self, app, node, fields, editor):
+        """积木字段编辑弹窗：按 fields 动态生成输入框，确定回调 _apply_node_edit。"""
         self._deactivate_windows_window_header_manipulation = True
         super().__init__(app, "编辑积木", 480, 120 + 56 * len(fields))
         self.node = node
@@ -2224,6 +2630,7 @@ class EditBlockDialog(BaseDialog):
                       ).pack(fill="x", padx=18, pady=(14, 16))
 
     def _save(self):
+        """收集各字段值，调 editor._apply_node_edit 写回节点，关窗。"""
         values = [(k, v.get()) for k, v in self.vars]
         self.editor._apply_node_edit(self.node, values)
         self.destroy()
@@ -2233,6 +2640,7 @@ class EditOneFieldDialog(BaseDialog):
     """单字段小对话框（改选项文字等）。"""
 
     def __init__(self, app, title, label, initial, on_save):
+        """单字段小弹窗：一个输入框，确定时调 on_save(值) 后关窗。"""
         self._deactivate_windows_window_header_manipulation = True
         super().__init__(app, title, 420, 190)
         self.on_save = on_save
@@ -2247,6 +2655,7 @@ class EditOneFieldDialog(BaseDialog):
                       ).pack(fill="x", padx=18, pady=(6, 14))
 
     def _save(self):
+        """确定：把输入值交给 on_save 回调（无论成功失败都关窗）。"""
         try:
             self.on_save(self.var.get())
         finally:
@@ -2254,7 +2663,9 @@ class EditOneFieldDialog(BaseDialog):
 
 
 class InfoDialog(BaseDialog):
+    """纯展示对话框（如语法检查结果），「知道了」关闭。"""
     def __init__(self, master, title, text):
+        """构造：标题栏+正文+「知道了」按钮，模态等窗口关闭。"""
         super().__init__(master, title, 430, 210)
         f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
         f.pack(fill="both", expand=True, padx=14, pady=14)
@@ -2270,7 +2681,9 @@ class InfoDialog(BaseDialog):
 
 
 class ConfirmDialog(BaseDialog):
+    """带「取消/确定」的二次确认框，确定后 result=True。"""
     def __init__(self, master, title, text):
+        """构造：标题+正文+取消/确定两按钮，模态等窗口关闭。"""
         super().__init__(master, title, 460, 300)
         f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
         f.pack(fill="both", expand=True, padx=14, pady=14)
@@ -2291,12 +2704,15 @@ class ConfirmDialog(BaseDialog):
         self.wait_window(self)
 
     def _ok(self):
+        """确定按钮：标记 result=True 并关窗。"""
         self.result = True
         self.destroy()
 
 
 class NewProjectDialog(BaseDialog):
+    """新建项目向导：填文件夹名/标题/分辨率，生成 script.stm 等脚手架。"""
     def __init__(self, master):
+        """构造：动态字段（项目名/标题/分辨率）+ 创建/取消按钮，回车=创建。"""
         super().__init__(master, "新建项目", 470, 400)
         f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
         f.pack(fill="both", expand=True, padx=14, pady=14)
@@ -2341,6 +2757,7 @@ class NewProjectDialog(BaseDialog):
         self.wait_window(self)
 
     def _ok(self):
+        """创建：校验项目名非空，返回 {name,title,size} 到 result 并关窗。"""
         name = self.e_name.get().strip()
         if not name:
             self.e_name.configure(border_color=DANGER)
@@ -2360,6 +2777,7 @@ class ModDialog(BaseDialog):
     """
 
     def __init__(self, app):
+        """美化包管理器：搭列表/信息/按钮，reload 拉 modmod 数据，模态等窗口。"""
         self._deactivate_windows_window_header_manipulation = True
         super().__init__(app, "美化包（mod/）", 700, 580)
         self.app = app
@@ -2421,6 +2839,7 @@ class ModDialog(BaseDialog):
 
     # ------------------------------------------------------------------ #
     def reload(self):
+        """重拉 modmod.list_mods，画包列表（高亮选中/当前启用），无包给空提示。"""
         self.packs = modmod.list_mods()
         active = modmod.active_id()
         self.lbl_dir.configure(text="目录：%s\n当前启用：%s" % (modmod.find_dir(), active))
@@ -2455,6 +2874,7 @@ class ModDialog(BaseDialog):
         self._show_info()
 
     def _show_info(self):
+        """根据选中包拼信息文案（含校验错误/警告），写进 lbl_info。"""
         p = [x for x in self.packs if x["id"] == self.sel]
         if not p:
             return
@@ -2471,14 +2891,17 @@ class ModDialog(BaseDialog):
         self.lbl_info.configure(text=text)
 
     def _select(self, mid):
+        """选中某包并 reload 重画。"""
         self.sel = mid
         self.reload()
 
     def _current(self):
+        """返回当前选中包（按 sel id 过滤 packs）。"""
         return [x for x in self.packs if x["id"] == self.sel]
 
     # ------------------------------------------------------------------ #
     def _use(self):
+        """启用选中的美化包（先校验，有错就拦下并提示）。"""
         p = self._current()
         if not p:
             return
@@ -2497,11 +2920,13 @@ class ModDialog(BaseDialog):
         self.reload()
 
     def _new(self):
+        """新建美化包入口：弹命名/信息后调 _do_new 建目录结构。"""
         EditOneFieldDialog(self.app, "新建美化包",
                            "包名（会作为文件夹名，建议英文 / 数字 / 下划线）",
                            "my_theme", self._do_new)
 
     def _do_new(self, name):
+        """真正新建美化包目录结构（gui.py/theme.css/js），reload 刷新。"""
         name = (name or "").strip()
         if not name:
             return
@@ -2516,11 +2941,13 @@ class ModDialog(BaseDialog):
         self.reload()
 
     def _check(self):
+        """用 tools/modcheck.py 检查选中包，结果弹 InfoDialog。"""
         p = self._current()
         if p:
             self.app.run_modcheck(p[0]["id"])
 
     def _pub(self):
+        """用 tools/modpub.py 把选中包发布成「XXX_美化包」，结果弹窗。"""
         p = self._current()
         if not p:
             return
@@ -2539,6 +2966,7 @@ class HtmlDialog(BaseDialog):
     """发布为 HTML 的选项。"""
 
     def __init__(self, master):
+        """网页发布弹窗：选导出目录/是否带素材/pyodide，确定调 _ok。"""
         super().__init__(master, "发布为 HTML", 500, 470)
         f = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
         f.pack(fill="both", expand=True, padx=14, pady=14)
@@ -2587,6 +3015,7 @@ class HtmlDialog(BaseDialog):
         self.wait_window(self)
 
     def _ok(self):
+        """按选项拼 tools/htmlpub.py 命令并跑，结果弹 InfoDialog。"""
         self.result = {
             "engine": "wasm" if self.v_engine.get() == "WebAssembly" else "js",
             "assets": {"assets 目录": "copy", "内联单文件": "inline",
@@ -2597,6 +3026,7 @@ class HtmlDialog(BaseDialog):
 
 # --------------------------------------------------------------------------- #
 def main():
+    """程序入口：建 Launcher 主窗口并进入 CustomTkinter 主循环。"""
     proj.ensure_dirs()
     app = Launcher()
 

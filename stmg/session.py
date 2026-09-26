@@ -19,7 +19,11 @@ SIDE_EFFECTS = ("bg", "picture", "sprite", "bgm", "se", "voice",
                 # 第 2 期新增的副作用型事件（T1 在回放时产出）：它们只是把联网 /
                 # 文件操作的结果带回给界面与存档，不阻塞推进，必须登记进这里，
                 # 否则回放时会卡在这两个事件上。
-                "api_result", "os_result")
+                "api_result", "os_result",
+                # 第 3 期 AVG 绘图：S.AVG-button 画一个形状 / S.AVG-clear 清屏。
+                # 只是往 AVG 图层上加东西，不用等玩家，所以也是副作用型——
+                # 不登记的话读档重放会卡在它上面，推进就断了。
+                "avg")
 
 # 序列化时的占位哨兵：表示「这个值没法变成 JSON，整项跳过」。
 _SKIP = object()
@@ -49,17 +53,33 @@ def _to_jsonable(v):
 def _scene_copy(scene):
     """把当前画面状态拷贝一份，避免存进去的快照被后来的推进改坏。"""
     if not isinstance(scene, dict):
-        return {"bg": "", "picture": "", "sprites": {}, "bgm": "", "bgm_loop": True}
+        return {"bg": "", "picture": "", "sprites": {}, "bgm": "", "bgm_loop": True,
+                "avg": []}
     return {
         "bg": scene.get("bg", ""),
         "picture": scene.get("picture", ""),
         "sprites": {tag: dict(sp) for tag, sp in scene.get("sprites", {}).items()},
         "bgm": scene.get("bgm", ""),
         "bgm_loop": scene.get("bgm_loop", True),
+        # AVG 图层：一条条 S.AVG-button 画上去的形状（第 3 期）。
+        # 老存档 / 老代码里没有这个键，get 默认空列表，向后兼容。
+        "avg": [dict(item) for item in scene.get("avg") or []],
     }
 
 
 class Session(object):
+    """引擎的「推进器」：把 Runtime 吐出的事件流整理成界面能直接用的状态。
+
+    核心想法——
+        一个 Session 内部跑着 Runtime 的生成器（self.gen）。Runtime 会一股脑
+        产出事件：立绘/背景/BGM 这类「副作用」事件要顺手应用，say/choose 这类
+        「要等玩家」的事件才停下交给界面。Session 帮界面挡掉这个差异：
+        界面只管问「现在显示什么（self.block）」「我点了以后变什么（next_block/
+        answer）」「怎么存读档（snapshot/restore）」。
+
+    不依赖 pygame，因此能无头跑（start.py --auto 自动化测试就靠它）。
+    """
+
     def __init__(self, script, options=None, dev_mode=True):
         self.script = script
         self.options = options
@@ -77,7 +97,8 @@ class Session(object):
         # sprites 是个字典：tag -> {"path":..., "pos": "left"/"center"/"right"}
         # 同时可以站好几张立绘，跟 Ren'Py 的 show 一个意思。
         self.scene = {"bg": "", "picture": "", "sprites": {},
-                      "bgm": "", "bgm_loop": True}
+                      "bgm": "", "bgm_loop": True,
+                      "avg": []}   # AVG 绘图层（第 3 期）：S.AVG-button 画的东西
         self.block = None
         self.effects = []        # 本次推进中产生的场景/音频指令
         self.toasts = []         # 本次推进中的右上角提示
@@ -100,6 +121,11 @@ class Session(object):
 
     # ------------------------------------------------------------------ #
     def _raw(self):
+        """从 Runtime 生成器取下一个原生事件。
+
+        剧本跑到尽头（生成器抛 StopIteration）就当成 {"t":"end"} 返回，
+        并标记 self.finished——之后界面据此显示结局画面。
+        """
         if self.finished:
             return {"t": "end"}
         try:
@@ -172,6 +198,14 @@ class Session(object):
                 self.scene["sprites"].pop(what, None)   # 按 tag 隐藏单个立绘
         elif t == "toast":
             self.toasts.append(ev.get("text", ""))
+        elif t == "avg":
+            # AVG 绘图（第 3 期）：draw = 往图层上摞一个形状（后画的在上），
+            # clear = 整层擦掉。整条事件存进 scene["avg"]，渲染层拿它现算几何；
+            # 快照存档时这些 dict 都是纯 JSON（数字/字符串/列表），能直接落盘。
+            if ev.get("action") == "clear":
+                self.scene["avg"] = []
+            else:
+                self.scene["avg"].append(dict(ev))
         elif t in ("api_result", "os_result"):
             # 联网 / 文件操作的回放结果：只是把结果交回界面与存档，不改动画面
             pass
@@ -273,6 +307,10 @@ class Session(object):
             if isinstance(saved_scene.get("sprites"), dict):
                 self.scene["sprites"] = {
                     tag: dict(sp) for tag, sp in saved_scene["sprites"].items()}
+            # AVG 图层：存档瞬间画了什么，读档就恢复什么
+            # （老存档里没有 avg 键，get 默认 []——正好等于「没画东西」）
+            if isinstance(saved_scene.get("avg"), list):
+                self.scene["avg"] = [dict(item) for item in saved_scene["avg"]]
         # 2) 变量：快照比重放结果更权威，整批覆盖（STM/R 不在快照里，自然保留）
         saved_vars = snap.get("vars")
         if isinstance(saved_vars, dict):

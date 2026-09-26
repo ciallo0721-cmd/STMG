@@ -43,6 +43,15 @@ _FILE_EXTS = IMG_EXTS | AUD_EXTS
 
 
 def _looks_like_file(path):
+    """判断一个字符串是否「看起来像磁盘上的素材文件路径」（而非角色名）。
+
+    参数 path：S.character / S.cg 等调用里解析出的第一个实参。
+    判断规则：含路径分隔符（/ 或 \\）就算文件；否则看扩展名是否落在
+              图片 / 音频扩展名集合里。
+    返回：True 表示像文件路径（应计入素材引用），False 表示像角色名
+              （如 S.character("角色1") 的纯名字，不当文件处理）。
+    被谁调用：scan_asset_refs 在筛素材引用时用它排除角色名注册。
+    """
     p = path.replace("\\", "/")
     if "/" in p or "\\" in p:
         return True
@@ -115,7 +124,19 @@ def _if_depth(stmts):
 
 
 def analyze(sc, game_dir, raw_text):
-    """对一份解析好的剧本做健康度分析，返回报告字典。"""
+    """对一份解析好的剧本做「健康度」全项分析，返回报告字典。
+
+    参数：
+      sc         parser.parse_file 得到的语句树（含 walk() / title / path /
+                body / error_count() 等）；
+      game_dir  剧本所在目录的绝对路径，用来查素材文件是否存在；
+      raw_text   剧本的原始文本，scan_asset_refs 要在里面用正则抠 S.* 调用。
+    报告字典的键（见 return 段）：台词统计、结构（Choose / If 深度 / 孤儿
+              label）、素材（引用数 / 缺失 / 动态路径 / 未引用）、可疑项
+              （变量未 SET / 选项未判断）、语法错误数、0~100 健康度评分。
+    被谁调用：main 在解析完剧本后调它拿报告，再交给 _md / json 输出。
+    删了会怎样：doctor 的核心分析全没了，整个工具退化成只会报语法错误数。
+    """
     says = [s for s in sc.walk() if s["k"] == "say"]
     narr = [s for s in says if not s.get("who")]
     roles = sorted({s["who"] for s in says if s.get("who")})

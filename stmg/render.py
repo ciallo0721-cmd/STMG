@@ -29,6 +29,7 @@ FONT_FILES = ["msyh.ttc", "msyhbd.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc",
 
 
 def _font_dirs():
+    """列出系统上常见的字体目录（Windows / Linux / macOS 都照顾到）。"""
     win = os.environ.get("WINDIR", r"C:\Windows")
     return [os.path.join(win, "Fonts"),
             os.path.join(os.environ.get("LOCALAPPDATA", ""),
@@ -156,6 +157,7 @@ def layout(runs, fonts, max_width, base_size=22, line_spacing=1.45):
 
 
 def total_chars(lines):
+    """统计排版后的总行里一共有多少个字符（用来算逐字显示的总时长）。"""
     return sum(len(frag[0]) for line in lines for frag in line)
 
 
@@ -181,6 +183,12 @@ def reveal(lines, budget):
 
 def draw_lines(surface, lines, fonts, x, y, line_h, base_size=22,
                default_color=(40, 40, 48), shadow=None):
+    """把 layout() 排好的行真正画到 surface 上，返回画完后的 y（下一行起点）。
+
+    lines 是 [[(文本, 样式, 宽度), ...], ...]；每个片段按自己的字号 / 颜色 /
+    粗斜体取字体，支持 code 代码底色、shadow 文字阴影、strike 删除线。
+    颜色写成 "#rrggbb" 或 (r,g,b) 都认，写错退回 default_color。
+    """
     for line in lines:
         cx = x
         for text, style, _w in line:
@@ -220,6 +228,12 @@ _image_cache = {}
 
 
 def load_image(path, size=None):
+    """读一张图片，按 (路径, 尺寸) 缓存——同路径同尺寸只解一次，省 CPU。
+
+    优先走资源包 pack（start.py 打包后素材在包里），解出来转成带 alpha 的
+    表面；给了 size 就顺手 smoothscale 缩放。任何读取出错都返回 None，
+    交给上层画占位块，绝不让一张坏图把渲染搞崩。
+    """
     key = (path, size)
     if key in _image_cache:
         return _image_cache[key]
@@ -333,6 +347,42 @@ def draw_sprite(surface, img, cx, bottom, item, ui, W, H, t=None):
                        bottom - img.get_height() + yoff))
 
 
+# --------------------------------------------------------------------------- #
+# AVG 绘图层（第 3 期）
+# --------------------------------------------------------------------------- #
+def draw_avg(surface, items, w, h):
+    """把 AVG 图层（session.scene["avg"] 里攒的那些形状）画到 surface 上。
+
+    items：一串 S.AVG-button 画上去的形状 dict（后画的在上面，按顺序画
+           就自然叠对）。每个 dict 里有 shape / ops / x / y / color 等，
+           几何计算全部交给 stmg/avg.py（桌面和网页共用同一套规则）。
+
+    坐标换算（avg.py 里算出的是「数学坐标」，y 向上、原点在画面中心）：
+        屏幕 x = w/2 + 局部 x
+        屏幕 y = h/2 - 局部 y      ← y 翻转，因为屏幕坐标 y 向下
+    """
+    from . import avg          # 延迟导入：render 被 import 时 avg 不一定用得上
+    for item in items or []:
+        geo = avg.item_geometry(item)
+        # 落点：画面正中 + 剧本给的坐标（y 取负 = 数学坐标翻成屏幕坐标）
+        ox = w / 2.0 + float(item.get("x") or 0.0)
+        oy = h / 2.0 - float(item.get("y") or 0.0)
+
+        for st in geo.get("strokes") or []:
+            pts = st.get("pts") or []
+            # pts 是 [x1,y1, x2,y2, ...] 的平铺列表，两个一组翻成屏幕点
+            sp = [(ox + pts[i], oy - pts[i + 1]) for i in range(0, len(pts) - 1, 2)]
+            if len(sp) >= 2:      # 少于两个点画不了线，跳过
+                pygame.draw.lines(surface, avg.hex_to_rgb(st.get("c")),
+                                  False, sp, max(1, int(st.get("w") or 1)))
+        for c in geo.get("circles") or []:
+            r = max(1, int(c.get("r") or 1))
+            center = (int(ox + c.get("cx", 0.0)), int(oy - c.get("cy", 0.0)))
+            # width 传 0 是实心圆，但我们约定 width 都是线宽（>=1 空心）
+            pygame.draw.circle(surface, avg.hex_to_rgb(c.get("c")),
+                               center, r, max(1, int(c.get("w") or 1)))
+
+
 def draw_placeholder(surface, rect, label, hue=0):
     """素材缺失时画个好看点的占位块，免得黑屏让人以为引擎坏了。"""
     base = [(58, 62, 84), (74, 60, 88), (52, 74, 78), (86, 70, 56)][hue % 4]
@@ -359,7 +409,16 @@ def draw_placeholder(surface, rect, label, hue=0):
 # 控件
 # --------------------------------------------------------------------------- #
 class Button(object):
+    """一个简单的矩形按钮控件：自带绘制和事件处理，用在标题界面 / 选项界面。
+
+    每帧 draw 一次（按当前鼠标位置算 hover），偶尔 handle 一个事件看有没有
+    被点中。action 是点中时返回给调用方的值，由 gui 决定怎么用。
+    """
     def __init__(self, rect, label, action, image=None):
+        """一个可点击的矩形按钮：rect 位置、label 文字、action 点击回调。
+
+        image 有值就画图片按钮，没有就画圆角文字按钮；hover 记录鼠标是否悬停。
+        """
         self.rect = pygame.Rect(rect)
         self.label = label
         self.action = action
@@ -387,6 +446,10 @@ class Button(object):
                          self.rect.centery - t.get_height() // 2))
 
     def handle(self, event):
+        """处理一个 pygame 事件：鼠标移动更新 hover，左键按下命中就返回 action。
+
+        没点中或不是相关事件返回 None，调用方拿返回值决定要不要触发点击。
+        """
         if event.type == pygame.MOUSEMOTION:
             self.hover = self.rect.collidepoint(event.pos)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:

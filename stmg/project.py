@@ -138,20 +138,27 @@ TEMPLATE_README = """# {title}
 
 # --------------------------------------------------------------------------- #
 def ensure_dirs():
+    """确保 projects/ 目录存在（新建项目前先调它）。"""
     if not os.path.isdir(PROJECTS_DIR):
         os.makedirs(PROJECTS_DIR, exist_ok=True)
 
 
 def slugify(name):
+    """把任意项目名压成安全的目录名：非字母数字 / 中文 / 下划线都变下划线。
+
+    空名或全是非法字符时退回 "game"，保证永远有个能用的目录名。
+    """
     s = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff]+", "_", name).strip("_")
     return s or "game"
 
 
 def is_project(path):
+    """是不是一个 STMG 项目：有 script.stm 才算（靠这个认项目）。"""
     return bool(path) and os.path.isfile(os.path.join(path, "script.stm"))
 
 
 def script_of(path):
+    """拼出项目里的主剧本绝对路径（script.stm）。"""
     return os.path.join(path, "script.stm")
 
 
@@ -231,6 +238,7 @@ def info(path):
 
 
 def _human(n):
+    """把字节数转成带单位的人话文本（B / KB / MB / GB / TB）。"""
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
             return "%.1f %s" % (n, unit)
@@ -337,6 +345,7 @@ def copy_custom_files(path):
 
 
 def rename_project(path, new_name):
+    """把项目目录改名（名字经 slugify 压成安全目录名）。重名会报错，不覆盖。"""
     new_path = os.path.join(os.path.dirname(path), slugify(new_name))
     if os.path.normcase(new_path) == os.path.normcase(path):
         return path
@@ -359,6 +368,10 @@ def trash_project(path):
 
 # --------------------------------------------------------------------------- #
 def load_cfg():
+    """读启动器的配置（.stmg_launcher.json）：最近项目 / python 路径 / 窗口大小。
+
+    读不到或损坏就返回默认字典，不让启动器因为配置坏掉而开不了。
+    """
     if os.path.isfile(CFG_PATH):
         try:
             with open(CFG_PATH, "r", encoding="utf-8") as f:
@@ -369,6 +382,7 @@ def load_cfg():
 
 
 def save_cfg(cfg):
+    """把配置写回 .stmg_launcher.json（写坏也不抛，静默忽略）。"""
     try:
         with open(CFG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=1)

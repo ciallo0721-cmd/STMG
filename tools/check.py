@@ -2,6 +2,22 @@
 # -*- coding: utf-8 -*-
 """语法检查器：不开窗口，只把剧本从头到尾体检一遍。
 
+本工具只做「静态体检」——读剧本、解析、统计、查素材、查 options，
+全程不启动 pygame、不开任何窗口，因此在 CI 或没有显示环境的服务器上也能跑。
+
+核心价值：
+  * 把 parser 阶段收集到的语法 Issue（错误 + 提示）全部打出来；
+  * 统计台词 / 选择支 / 引擎调用 / Python 代码块的数量，便于体检剧本规模；
+  * 顺手检查剧本里引用的素材文件是否真的躺在磁盘上（缺了游戏里只是画占位块，
+    不影响运行，只提示）；
+  * 提示 options.stm 里有没有写加密口令 Enc（发布必须，否则发布器用不了）。
+
+退出码（给 shell / CI 当返回值用）：
+  0  没有 error 级别问题（可能有「提示」，但提示不阻塞发布）
+  1  有 error 级别问题，需要先修
+  2  连 script.stm 都没找到（target 路径不对）
+
+用法：
     python tools/check.py demo
     python tools/check.py demo/script.stm
     python tools/check.py demo --verbose     把语句树也打出来
@@ -20,6 +36,16 @@ from stmg.errors import level_name                             # noqa: E402
 
 
 def find_script(target):
+    """把用户给的「目标」解析成 script.stm 文件的具体路径。
+
+    参数 target 可能是两种东西：
+      * 已经是剧本文件（如 demo/script.stm）-> 直接返回它自己；
+      * 是目录（如 demo）-> 在该目录里依次找 script.stm、script.stmdec，
+        找到哪个返回哪个（优先 .stm）；
+    返回：脚本文件的路径字符串；如果两种都不是，返回空串 ""，
+          调用方（main）据此打印「没找到」并以退出码 2 收场。
+    删了会怎样：main 没法定位文件，整个 check 直接失败。
+    """
     if os.path.isfile(target):
         return target
     for name in ("script.stm", "script.stmdec"):
@@ -30,6 +56,19 @@ def find_script(target):
 
 
 def main(argv):
+    """check.py 的命令行入口：解析参数 -> 体检剧本 -> 打印报告 -> 返回退出码。
+
+    参数 argv：sys.argv（含程序名），例如 ["tools/check.py", "demo", "--verbose"]。
+    主要流程：
+      1. 解析 --verbose 开关，其余不以 -- 开头的参数当作 target；
+      2. 用 find_script 定位脚本文件，找不到就打印提示并返回 2；
+      3. parser.parse_file 解析整份剧本，拿到语句树 sc；
+      4. 打印表头（标题 / 分辨率 / 字体 / 版本）与统计（台词 / 选择 / 调用 / py 块）；
+      5. 遍历语句树，列出磁盘上缺失的素材文件（仅提示，不致命）；
+      6. 加载 options.stm，提示缺 Enc 口令、打印 options 自身的 issue；
+      7. 汇总 sc.issues：有 error 返回 1，否则返回 0。
+    被谁调用：文件末尾 `if __name__ == "__main__"` 里 sys.exit(main(sys.argv))。
+    """
     args = argv[1:]
     verbose = "--verbose" in args
     args = [a for a in args if not a.startswith("--")]
@@ -66,7 +105,9 @@ def main(argv):
     if pys:
         print("python 代码块 %d 处（开发模式专属：发布版会整块跳过）" % len(pys))
 
-    # 素材存在性
+    # 素材存在性：下面这些 S.* 调用，第一个实参是「磁盘上的素材文件路径」，
+    # 需要确认它真的存在。缺了不会让游戏崩（运行时自动画占位块），
+    # 但这里提前报出来，方便作者把美术资源放齐。
     ASSET_METHODS = {"cg", "bg", "background", "picture", "play",
                      "sound", "voice"}
     missing = []

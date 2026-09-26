@@ -1,9 +1,36 @@
 # -*- coding: utf-8 -*-
-"""STMG 主界面（pygame）。
+"""STMG 主界面（pygame 桌面版前端）。
 
-界面状态：标题 / 对白 / 选择支 / 询问输入 / 菜单 / 历史 / 存读档 / 报错 / 结束 / 等待
-（等待 = python 代码块逐行飘提示的间隔，到点自己往下走，点一下可以跳过）
-渲染统一画在一张 base 画布上，再整体缩放到窗口，所以剧本写多大分辨率都能跑。
+这是引擎的「看得见」的一层：把 Session 跑出来的事件流画成画面、处理鼠标键盘、
+管标题/对白/选择支/询问/菜单/历史/存读档/报错/结束/成就/画廊等界面。
+网页版（webplayer.html + web_bridge.py）是另一套实现，但用的同一份 Session/Runtime。
+
+---------------------------------------------------------------------------
+界面状态机（self.state 取下面 11 个常量之一）
+---------------------------------------------------------------------------
+    TITLE    标题界面（开始/继续/语言/关于/画廊…）
+    ADVANCE  对白中（点一下/空格推进；打字机没放完则先放完）
+    CHOOSE   选择支（等玩家点一个）
+    QUESTION 询问输入（等玩家打字提交）
+    MENU     设置菜单（速度/音量/字体/语言/存档…）
+    BACKLOG  历史回看
+    SAVELOAD 存读档界面
+    ERROR    解析/运行报错界面（Ren'Py 风格，错误显示在窗口里）
+    ENDING   结局界面
+    GALLERY   CG 画廊
+    WAIT      python 代码块逐行飘提示的间隔，到点自己往下走（点一下可跳过）
+
+---------------------------------------------------------------------------
+渲染手法
+---------------------------------------------------------------------------
+所有内容先画在一张固定分辨率的 base 画布（self.base，大小 = 剧本分辨率 W×H），
+最后整体缩放到实际窗口（self.scale）。好处：剧本作者写死的坐标/分辨率，
+在任何窗口大小下都能正确显示，不用为适配改代码。
+
+界面外观（颜色/位置/字号…）不在代码里写死，全部走 uiconf.DEFAULTS，
+项目目录下的 custom/gui.py 可以覆盖任意一项。
+
+本文件只加注释和 docstring，不改任何代码逻辑与字符串字面量。
 """
 
 import json
@@ -16,6 +43,8 @@ from .audio import Audio
 from .errors import format_exception
 from .session import Session
 
+# 界面状态枚举（顺序即编号，不要插队改顺序，别处用数字比较）。
+# 含义见文件头的状态机表。WAIT 是 python 代码块逐行飘提示的间隔态。
 (TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING,
  GALLERY, WAIT) = range(11)
 
@@ -28,6 +57,10 @@ FONT_CHOICES = ["", "微软雅黑", "黑体", "宋体", "楷体"]
 
 class Settings(object):
     def __init__(self, root):
+        """读界面设置（速度/音量/字体/全屏…），缺文件就用默认值。
+
+        设置存在 <项目>/.stmg_save/settings.json；读不了也不影响游戏。
+        """
         self.root = root
         self.path = os.path.join(root, ".stmg_save", "settings.json")
         self.text_speed = 45.0     # 每秒显示多少字，<0 表示瞬间全出
@@ -44,6 +77,7 @@ class Settings(object):
         self.load()
 
     def load(self):
+        """从 settings.json 把设置读回来（容错：坏文件/缺字段都用默认值）。"""
         if os.path.isfile(self.path):
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
@@ -63,6 +97,7 @@ class Settings(object):
                 pass
 
     def save(self):
+        """把当前设置写回 settings.json（退出游戏时调；写失败静默忽略）。"""
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
@@ -81,8 +116,21 @@ class Settings(object):
 
 
 class App(object):
+    """pygame 桌面前端的总控：一个 App 实例 = 一局游戏界面。
+
+    构造时做初始化（建窗口、加载界面配置、建字体/音频、起 Session、读多语言），
+    然后 run() 进入主循环：每帧 handle_events() 收输入 → update(dt) 推进逻辑
+    → draw() 画到 base 再缩放到屏幕 → flip。
+    """
+
     def __init__(self, script, options=None, dev_mode=True, auto=False,
                  script_errors=None, mod_id=None, no_mod=False):
+        """搭一局游戏的界面：建窗口、加载界面配置、字体/音频、起 Session、读多语言。
+
+        参数：script=解析好的剧本；options=发布配置；dev_mode=开发模式(显示错误细节)；
+        auto=自动播放；script_errors=解析期错误(非空则直接进错误界面)；
+        mod_id/no_mod=美化包选择。
+        """
         pygame.init()
         self.script = script
         self.dev_mode = dev_mode
@@ -174,6 +222,7 @@ class App(object):
     # 窗口
     # ------------------------------------------------------------------ #
     def _open_window(self):
+        """按剧本分辨率与屏幕可用空间算缩放比，建 pygame 窗口并设标题。"""
         info = pygame.display.Info()
         max_w, max_h = int(info.current_w * 0.9), int(info.current_h * 0.9)
         self.scale = min(1.0, max_w / float(self.W), max_h / float(self.H))
@@ -183,6 +232,11 @@ class App(object):
         pygame.display.set_caption(self.script.title)
 
     def _to_base(self, pos):
+        """屏幕坐标 → base 画布坐标：除以缩放比。
+
+        鼠标事件拿到的是窗口(缩放后)坐标，画布按剧本分辨率算，所以要除回来，
+        否则高亮/点击命中在放大缩小后会偏。
+        """
         return (int(pos[0] / self.scale), int(pos[1] / self.scale))
 
     def draw_buttons(self, size):
@@ -195,6 +249,7 @@ class App(object):
     # 资源
     # ------------------------------------------------------------------ #
     def asset(self, *parts):
+        """拼一个项目里 gui/ 目录下的资源路径；文件不存在返回空串（调用方兜底）。"""
         p = os.path.join(self.root, "gui", *parts)
         return p if os.path.isfile(p) else ""
 
@@ -209,6 +264,7 @@ class App(object):
         return full if os.path.isfile(full) else ""
 
     def _title_bgm_on(self):
+        """进标题界面时播标题 BGM（custom/gui.py 里配的 title_bgm，没有就不播）。"""
         path = self.ui_path(self.ui.get("title_bgm"))
         if not path:
             return
@@ -226,6 +282,11 @@ class App(object):
         return pygame.Rect(x, y, w, h)
 
     def apply_effects(self):
+        """把当前事件里的「特效」消费掉：放音、弹成就、给立绘/背景/叠图挂补间。
+
+        在每次推进后调用——Session.effects 里攒着这一句带来的音频/成就/过渡事件，
+        这里把它们 dispatch 出去（音频交给 audio，成就/补间记在本地状态）。
+        """
         for ev in self.session.effects:
             self.audio.apply(ev)
             if ev["t"] == "achieve" and ev.get("is_new"):
@@ -277,6 +338,7 @@ class App(object):
 
     @staticmethod
     def _anim_p(a):
+        """补间进度 0~1：dur<=0 直接算完成(1.0)，否则按已用时间/总时长夹住。"""
         if a["dur"] <= 0:
             return 1.0
         return min(1.0, a["t"] / a["dur"])
@@ -292,6 +354,7 @@ class App(object):
     # 主循环
     # ------------------------------------------------------------------ #
     def run(self):
+        """主循环：每帧收输入、推进逻辑、绘制、翻屏，直到 running=False。"""
         clock = pygame.time.Clock()
         while self.running:
             dt = clock.tick(60) / 1000.0
@@ -304,6 +367,11 @@ class App(object):
         pygame.quit()
 
     def update(self, dt):
+        """每帧推进逻辑：驱动音频淡变、转场、补间、打字机、快进/自动、成就弹窗。
+
+        dt 是距上一帧的秒数，所有「随时间变化」的东西都按它插值，保证不同帧率
+        下表现一致。这里不管绘制（draw 负责）。
+        """
         # 音频淡入淡出驱动（第 2 期 #5，T5 提供 update；没实现就跳过，保证不崩）
         au = getattr(self.audio, "update", None)
         if callable(au):
@@ -385,13 +453,20 @@ class App(object):
             self.achieve_popups = [p for p in self.achieve_popups if p["ttl"] > 0]
 
     def is_revealed(self):
+        """当前台词是否已经「显示完」（打字机 reveal 进度 >= 总字数）。"""
         return self.reveal >= self._total_chars()
 
     def _total_chars(self):
+        """本句台词的总字数（打字机按这个算「显示到第几个字」）。"""
         return len(self.session.text)
 
     # ------------------------------------------------------------------ #
     def advance(self):
+        """玩家点一下/空格：把当前对白推进到下一块。
+
+        推进前先快照场景（供补间起点），已读的 say 记进 seen（供快进跳过），
+        然后清打字机状态、让 Session 走下一步、消费特效、刷新界面状态。
+        """
         if self.state != ADVANCE:
             return
         self._prev_scene = self._capture_scene()
@@ -407,6 +482,7 @@ class App(object):
         self.sync_state()
 
     def choose(self, index):
+        """玩家选了第 index 个选项：把选项提交给 Session 并推进。"""
         self._prev_scene = self._capture_scene()
         self.reveal = 0.0
         self._shown_chars = 0
@@ -415,6 +491,7 @@ class App(object):
         self.sync_state()
 
     def submit_answer(self, text):
+        """询问输入提交：把玩家打的文字交给 Session 并推进。"""
         self._prev_scene = self._capture_scene()
         self.reveal = 0.0
         self._shown_chars = 0
@@ -423,6 +500,12 @@ class App(object):
         self.sync_state()
 
     def sync_state(self):
+        """根据当前 block 的类型，把 self.state 切到对应界面态。
+
+        遇到 transition 会先快照上一帧再去拿真内容（让遮罩跨两帧渐变）；
+        wait/python 代码块会进 WAIT 态亮一会儿；say/choose/question/fatal/ending
+        各自归位。每次推进后都会调它。
+        """
         blk = self.session.block
         t = blk["t"]
         if t == "transition":
@@ -471,6 +554,7 @@ class App(object):
     # 事件
     # ------------------------------------------------------------------ #
     def handle_events(self):
+        """消费这一帧的所有 pygame 事件：退出、键盘、文本输入、按钮点击。"""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
@@ -530,6 +614,10 @@ class App(object):
                     self.open_backlog()
 
     def on_key(self, event):
+        """键盘主分发：Esc 返回/开菜单、F11 全屏、Ctrl 快进、空格推进、F5/F9 存读档…
+
+        按当前 state 走不同分支；解析错误界面只允许回车/Esc 关窗。
+        """
         k = event.key
         # 解析错误界面：回车 / Esc 直接关窗口（没有可继续的游戏）
         if self.state == ERROR and self.error_mode == "script":
@@ -582,6 +670,7 @@ class App(object):
             self.state = ENDING
 
     def _key_release(self, event):
+        """松开 Ctrl 时关掉快进（按住 Ctrl 才是快进态）。"""
         if event.key in (pygame.K_LCTRL, pygame.K_RCTRL):
             self.skip = False
 
@@ -589,12 +678,14 @@ class App(object):
     # 界面
     # ------------------------------------------------------------------ #
     def open_menu(self):
+        """打开设置菜单（覆盖层）：记住从哪个界面进来的，关掉能回去。"""
         self.overlay_from = self.state
         self.state = MENU
         self.about_only = False
         self.buttons = []
 
     def toggle_fullscreen(self):
+        """切换全屏：改设置后重开显示模式，并重建 base 画布、清图片缓存。"""
         self.settings.fullscreen = not self.settings.fullscreen
         pygame.display.quit()
         pygame.display.init()
@@ -605,18 +696,24 @@ class App(object):
         self.pending_toasts.append("全屏：%s" % ("开" if self.settings.fullscreen else "关"))
 
     def open_backlog(self):
+        """打开历史回看（覆盖层）：滚到最新一句附近。"""
         self.overlay_from = self.state
         self.state = BACKLOG
         self.backlog_scroll = max(0, len(self.session.runtime.history) - 6)
         self.buttons = []
 
     def open_saveload(self, saving):
+        """打开存读档界面；saving=True 是存档模式，False 是读档模式。"""
         self.overlay_from = self.state
         self.state = SAVELOAD
         self.save_mode = saving
         self.buttons = []
 
     def title_buttons(self):
+        """构造标题界面的按钮列表（开始/读取/语言/画廊/设置/关于）。
+
+        有至少两种语言才显示「语言」按钮；按钮图优先用 gui/button/*.png。
+        """
         out = []
         cx = self.W // 2
         y = int(self.H * 0.44)
@@ -636,6 +733,7 @@ class App(object):
         return out
 
     def start_game(self):
+        """从标题进入游戏：停标题 BGM、重置 Session、清补间、放第一句台词。"""
         # 标题曲到此为止，音量还给玩家设置
         if self.ui.get("title_bgm"):
             self.audio.apply({"t": "stop", "what": "bgm"})
@@ -650,6 +748,7 @@ class App(object):
         self.sync_state()
 
     def show_about(self):
+        """打开「关于」面板（复用菜单界面，只是只显示关于文字）。"""
         self.overlay_from = TITLE
         self.state = MENU
         self.about_only = True
@@ -681,6 +780,7 @@ class App(object):
         return True
 
     def cycle_lang(self):
+        """在可用语言间循环切一个（标题界面的「语言」按钮回调）。"""
         if len(self.lang_order) < 2:
             return
         i = self.lang_order.index(self.current_lang) \
@@ -691,6 +791,7 @@ class App(object):
     # CG 回廊
     # ------------------------------------------------------------------ #
     def open_gallery(self):
+        """打开 CG 回廊：列出本局已见过的 CG（按 runtime.seen_cg）。"""
         self.overlay_from = TITLE
         self.state = GALLERY
         self.gallery_view = ""
@@ -709,10 +810,12 @@ class App(object):
                 self.buttons.append(render.Button(r, "", (lambda pp=p: self._view_cg(pp)), img))
 
     def _view_cg(self, path):
+        """点缩略图后放大查看这张 CG（再点一下由 handle_events 退回画廊）。"""
         self.gallery_view = path
         self.buttons = []
 
     def draw_gallery(self):
+        """画 CG 回廊：深色底 + 网格缩略图；有 gallery_view 时放大单张。"""
         # 深色底 + 网格缩略图；点缩略图放大，Esc 返回标题
         self.base.fill((16, 16, 24))
         title = self.fonts.get(int(self.H * 0.05)).render("CG 回廊", True, (235, 235, 245))
@@ -735,6 +838,7 @@ class App(object):
 
     # ------------------------------------------------------------------ #
     def choice_rects(self):
+        """算当前选择支每个按钮的矩形（居中竖直排，间距/大小走界面配置）。"""
         opts = self.session.block.get("options", []) if self.session.block else []
         n = len(opts)
         u = self.ui
@@ -744,6 +848,10 @@ class App(object):
         return [pygame.Rect(x, y0 + i * (h + gap), w, h) for i in range(n)]
 
     def draw(self):
+        """每帧的总绘制入口：按 state 分派到对应 draw_*，再叠转场遮罩和提示。
+
+        最后把 base 画布缩放到屏幕（self.scale）；标题/错误/结局态不叠转场。
+        """
         if self.state == TITLE:
             self.draw_title()
         elif self.state == ERROR:
@@ -781,6 +889,7 @@ class App(object):
 
     # ------------------------------------------------------------------ #
     def draw_title(self):
+        """画标题界面：背景图或渐变 + 标题字/图 + 按钮列表。"""
         u = self.ui
         # 标题背景：配了图就用图，没配就用渐变（两个端点色也能改）
         bg = render.load_image(self.ui_path(u["title_bg"]))
@@ -818,6 +927,7 @@ class App(object):
         self.draw_buttons(22)
 
     def draw_scene(self):
+        """画游戏场景：背景 → 叠图 → 立绘（都带补间淡入）→ AVG 绘图层 → 对话框。"""
         self.base.fill((16, 16, 22))
         # 背景：带 dur 时做交叉淡入（老背景先停着，新背景渐渐显出来）
         bg_path = self.session.scene.get("bg", "")
@@ -887,6 +997,12 @@ class App(object):
                 r = pygame.Rect(cx - w // 2, bottom - h, w, h)
                 render.draw_placeholder(self.base, r, path, i + 1)
 
+        # ---- AVG 绘图层（第 3 期）----
+        # S.AVG-button 画上去的形状 / SET 定义的绘图，叠在立绘上面、
+        # 对话框下面。层里什么都没有时这个调用直接空转，零开销。
+        render.draw_avg(self.base, self.session.scene.get("avg") or [],
+                        self.W, self.H)
+
         self.draw_textbox()
 
     def _draw_crossfade(self, path, p, w, h, h_frac):
@@ -923,6 +1039,10 @@ class App(object):
                              int(self.H * self.ui["pic_center_y"]) - img.get_height()))
 
     def draw_textbox(self):
+        """画对话框：底板（图或圆角半透明面板）+ 名字框 + 打字机逐字显示的台词。
+
+        台词先过 markdown 渲染成 runs，再排版、按 reveal 进度裁出已显示的字符。
+        """
         u = self.ui
         box = self.box_rect()
         img = render.load_image(self.asset("textbox", "box.png"), box.size)
@@ -967,6 +1087,7 @@ class App(object):
                           line_h, base_size=base)
 
     def draw_choices(self):
+        """画选择支：先压暗整屏，再画各个选项按钮（鼠标悬停高亮）。"""
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 90))
         self.base.blit(dim, (0, 0))
@@ -984,6 +1105,7 @@ class App(object):
                                r.centery - t.get_height() // 2))
 
     def draw_question(self):
+        """画询问输入：提示 + 输入框（带闪烁光标）+ 回车确认提示。"""
         blk = self.session.block
         u = self.ui
         box = pygame.Rect(int(self.W * u["ask_x"]), int(self.H * u["ask_y"]),
@@ -1006,6 +1128,10 @@ class App(object):
         self.base.blit(hint, (box.x + 18, box.bottom - 26))
 
     def draw_menu(self):
+        """画设置菜单：速度/字号/行距/透明度/打字机/字体/音量/存档…逐项可循环调。
+
+        about_only=True 时只显示「关于」文字（show_about 进入）。
+        """
         self.buttons = []
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 150))
@@ -1064,20 +1190,24 @@ class App(object):
         self.draw_buttons(18)
 
     def _back(self):
+        """菜单/关于的「返回」：关掉覆盖层，回到进菜单前的界面。"""
         self.about_only = False
         self.state = self.overlay_from
         self.buttons = []
 
     def _to_title(self):
+        """菜单里的「回到标题」：关掉游戏界面，回标题。"""
         self.about_only = False
         self.state = TITLE
         self.buttons = []
 
     def cycle_speed(self):
+        """循环切文字速度：45 → 翻倍… → 超过 200 变「瞬间全出」(-1) → 回到 45。"""
         v = self.settings.text_speed
         self.settings.text_speed = -1 if v > 200 else (v * 2 if v > 0 else 45)
 
     def cycle_vol(self, kind):
+        """循环切某路音量：每次 +0.2，超过 1.0 回到 0（静音），并实时生效。"""
         v = self.settings.vol[kind] + 0.2
         if v > 1.01:
             v = 0.0
@@ -1088,6 +1218,7 @@ class App(object):
     # 第 2 期 #8：设置面板的循环调节项
     # ------------------------------------------------------------------ #
     def cycle_font_scale(self):
+        """循环切正文字号倍率：0.8 → 1.0 → 1.2 → 1.4 → 1.6 → 回到 0.8。"""
         # 0.8 -> 1.0 -> 1.2 -> 1.4 -> 1.6 -> 回到 0.8
         steps = [0.8, 1.0, 1.2, 1.4, 1.6]
         i = steps.index(round(self.settings.font_scale, 2)) \
@@ -1095,6 +1226,7 @@ class App(object):
         self.settings.font_scale = steps[(i + 1) % len(steps)]
 
     def cycle_line_spacing(self):
+        """循环切行距：1.2 → 1.4 → 1.6 → 1.8 → 2.0 → 回到 1.2。"""
         # 1.2 -> 1.4 -> 1.6 -> 1.8 -> 2.0 -> 回到 1.2
         steps = [1.2, 1.4, 1.6, 1.8, 2.0]
         i = steps.index(round(self.settings.line_spacing, 2)) \
@@ -1102,6 +1234,7 @@ class App(object):
         self.settings.line_spacing = steps[(i + 1) % len(steps)]
 
     def cycle_box_alpha(self):
+        """循环切对话框透明度：默认 → 不透明 → 渐透 → 更透 → 最透 → 回到默认。"""
         # None(默认) -> 不透明 -> 渐透 -> 更透 -> 最透 -> 回到默认
         seq = [None, 255, 200, 150, 100]
         try:
@@ -1111,9 +1244,11 @@ class App(object):
         self.settings.box_alpha = seq[(i + 1) % len(seq)]
 
     def toggle_typewriter(self):
+        """开关打字机效果：关掉时文字瞬间全出（update 里也会强制 reveal=1e9）。"""
         self.settings.typewriter = not self.settings.typewriter
 
     def cycle_font(self):
+        """循环切界面字体（FONT_CHOICES），切完重建字体集让当前画面立即变。"""
         choices = FONT_CHOICES
         try:
             i = choices.index(self.settings.font_name)
@@ -1143,6 +1278,7 @@ class App(object):
             pass
 
     def draw_backlog(self):
+        """画历史回看：压暗背景 + 面板，按 backlog_scroll 翻出最近若干句台词。"""
         self.buttons = []
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 180))
@@ -1169,6 +1305,11 @@ class App(object):
         self.base.blit(hint, (panel.centerx - hint.get_width() // 2, panel.bottom - 30))
 
     def draw_saveload(self):
+        """画存读档界面：若干槽（带缩略图/文字描述）+ 导出/导入按钮 + 返回。
+
+        save_mode=True 是存档态（点槽写档），False 是读档态（点槽读档）。
+        缩略图读写由 savemod 提供，拿不到就走纯文字（向后兼容）。
+        """
         self.buttons = []
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
         dim.fill((0, 0, 0, 170))
@@ -1233,6 +1374,7 @@ class App(object):
         return render.fit_into(surf, 120, 54)
 
     def do_save(self, n):
+        """写第 n 格存档（记快速槽位），并顺手把当前画面存成缩略图。"""
         savemod.write_slot(self.root, n, self.session.snapshot())
         self.settings.quick_slot = n
         self.pending_toasts.append("已保存到第 %d 格" % n)
@@ -1255,6 +1397,10 @@ class App(object):
         self.do_load(self.settings.quick_slot)
 
     def do_load(self, n):
+        """读第 n 格存档；空槽提示，成功则恢复 Session 并标记历史为「已读」。
+
+        读档不补间（直接落终态）；恢复失败切到错误界面。
+        """
         snap = savemod.read_slot(self.root, n)
         if not snap:
             self.pending_toasts.append("第 %d 格是空的" % n)
@@ -1278,6 +1424,10 @@ class App(object):
     # 第 2 期 #6：存档导入 / 导出（用系统文件对话框，结果以提示反馈）
     # ------------------------------------------------------------------ #
     def export_save(self):
+        """把所有存档槽导出成一个 .stmgsav 文件（系统文件对话框选路径）。
+
+        导入导出功能由 savemod 提供，未提供时提示「尚未就绪」；失败不崩，给提示。
+        """
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -1307,6 +1457,10 @@ class App(object):
         self.pending_toasts.append(msg)
 
     def import_save(self):
+        """从 .stmgsav 文件导入存档槽（系统文件对话框选文件），结果以提示反馈。
+
+        功能由 savemod 提供，未提供时提示「尚未就绪」；失败不崩，给提示。
+        """
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -1356,6 +1510,10 @@ class App(object):
         return rows
 
     def draw_error(self):
+        """画错误界面：解析错误（脚本问题列表，可滚动）或运行时致命错误（看日志）。
+
+        开发模式(dev_mode)下显示详细堆栈，给作者看；发布版只给玩家一句安慰话。
+        """
         self.base.fill((20, 18, 26))
         f_title = self.fonts.get(28, bold=True)
         t = f_title.render("An error has occurred.", True, (255, 110, 110))
@@ -1447,6 +1605,7 @@ class App(object):
             y += th + 12
 
     def draw_ending(self):
+        """画结局界面：一句「感谢游玩」+「点击/回车结束」；点一下就关游戏。"""
         self.base.fill((18, 20, 30))
         text = "感谢游玩"
         f = self.fonts.get(int(self.H * 0.06), bold=True)
@@ -1460,6 +1619,10 @@ class App(object):
 
 
 def _wrap_plain(text, per_line):
+    """把纯文本按「每行最多 per_line 字」或换行符手动折行，返回行列表。
+
+    给「关于」面板这类纯文字显示用（不进 markdown 渲染）。
+    """
     out, line = [], ""
     for ch in text:
         line += ch

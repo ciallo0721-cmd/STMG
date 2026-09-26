@@ -116,6 +116,7 @@ def read_lines(path):
 
 
 def indent_of(raw):
+    """算一行源码的缩进宽度（只数前导空格和 tab）。"""
     return len(raw) - len(raw.lstrip(" \t"))
 
 
@@ -133,6 +134,7 @@ def out_col(src_ind):
 
 
 def unescape(text):
+    """把 Ren'Py 字符串里的转义还原成真字符（\\" \\n \\t \\\\）。"""
     return (text.replace('\\"', '"').replace("\\n", "\n")
                 .replace("\\t", "\t").replace("\\\\", "\\"))
 
@@ -290,6 +292,11 @@ def split_modifiers(rest):
 
 
 def pick_pos(at_raw):
+    """从 Ren'Py 的 `at left/right/center` 里挑出 STMG 认得的位置。
+
+    参数 at_raw：`at` 后面的原始串（可能多个 token，逗号或空格分隔）。
+    返回：POS_MAP 里映射出的 "left"/"right"/"center"，都没匹配到就默认 "center"。
+    """
     for token in re.split(r'[,\s]+', at_raw or ""):
         token = token.strip().lower()
         if token in POS_MAP:
@@ -324,6 +331,13 @@ def conv(items, i, cur_indent, ctx, path):
 
 
 def handle(items, i, ind, ctx, path):
+    """转换单条 Ren'Py 语句 → STMG 行列表。这是转换的「分派中枢」。
+
+    按行首关键字依次匹配：注释 / label / define+image（已扫描，丢弃）/
+    default / if-elif-else 链 / menu / scene / show / hide / 音频(play/stop/voice)/
+    jump+return / $ 语句 / 台词(有名/无名) / 已知可忽略 / 转场 / 其余交 handle_unknown。
+    每条匹配成功后返回 (行列表, 下一条下标)，由 conv 接着推进。
+    """
     text = items[i][1]
     ln = items[i][2]
     I = lambda s: (" " * out_col(ind)) + s  # 叶子语句带好当前缩进的前导空格
@@ -749,6 +763,14 @@ def scan_defs(path, ctx):
 
 
 def rpy_files(game_dir, extra):
+    """列出 game 目录下要转换的 .rpy 文件，跳过 Ren'Py 引擎自带界面文件。
+
+    参数：
+      game_dir    Ren'Py 工程的 game 文件夹；
+      extra       用 --include 强制纳入的引擎文件名集合（默认全跳过 ENGINE_RPY）。
+    返回：绝对路径列表（已排序，保证转换顺序稳定）。这些文件是正文转换对象；
+          options.rpy / gui.rpy 不在其中，但会被 scan_meta 单独读标题和分辨率。
+    """
     out = []
     for fn in sorted(os.listdir(game_dir)):
         if not fn.endswith(".rpy"):

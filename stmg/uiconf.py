@@ -103,6 +103,12 @@ DEFAULTS = {
 
 
 def _clone(v):
+    """浅拷贝字典类的值。
+
+    每个配置项初始都从 DEFAULTS 拷一份：这样项目/美化包改自己的那份时，
+    不会误改到全局 DEFAULTS（否则下一次 load 会带着上一轮的脏值）。
+    非字典（数字/字符串/列表）是值语义，直接用即可。
+    """
     return dict(v) if isinstance(v, dict) else v
 
 
@@ -148,13 +154,16 @@ def load(root, mod_id=None, no_mod=False):
         return cfg
     for k, v in user.items():
         if v is None:
-            continue
+            continue            # project/gui.py 里写 "key": None 表示「恢复默认」
         if k not in cfg:
+            # 写了 DEFAULTS 不认识的项：记到 _unknown，不报错也不生效
             cfg.setdefault("_unknown", []).append(k)
             continue
         if isinstance(cfg[k], dict) and isinstance(v, dict):
+            # 两边都是字典（如 sprite_x 的位置表）：逐键合并，只覆盖写到的键
             cfg[k].update(v)
         else:
+            # 标量/列表：整体替换
             cfg[k] = v
     return cfg
 

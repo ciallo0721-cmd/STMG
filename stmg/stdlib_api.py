@@ -97,11 +97,20 @@ def python_builtins():
 
 
 def call_api(url, key=None, method="GET", params=None, data=None):
-    """R.api 的实现。返回 (ok, 结果文本)。"""
+    """R.api 联网能力的实现。统一返回 (ok, 结果) 二元组：
+
+        ok=True   拿到响应；结果可能是解析好的 dict/list（JSON），
+                  也可能还是原始文本（服务器没返回合法 JSON）。
+        ok=False  任何失败（没写 url / 超时 / HTTP 报错 / 连不上），
+                  结果是「人话原因」字符串，剧情端据此决定怎么兜底。
+
+    key 作为 Bearer Token 放进 Authorization 头；params 拼到查询串；
+    data 非 None 时按 JSON 请求体发出，头标 Content-Type: application/json。
+    """
     if not url:
         return False, "R.api 没写 url"
     if not re.match(r"^https?://", url, re.I):
-        url = "http://" + url
+        url = "http://" + url          # 用户偷懒没写协议：默认补 http
 
     if params:
         url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
@@ -117,6 +126,9 @@ def call_api(url, key=None, method="GET", params=None, data=None):
 
     req = urllib.request.Request(url, data=body, headers=headers,
                                  method=method.upper())
+    # 安全底线：所有网络异常（超时 / 连不上 / 解析错）都吞掉，转成
+    # (False, 人话原因) 返回。绝不让一次 R.api 把整个剧情卡死——
+    # 联网是「锦上添花」，不是「没它玩不了」。
     try:
         with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             raw = resp.read()

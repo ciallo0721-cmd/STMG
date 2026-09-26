@@ -30,6 +30,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   font-size:15px;color:rgba(255,255,255,.62);letter-spacing:.5px;
   text-shadow:0 1px 8px rgba(0,0,0,.5)}
 #spr-layer{position:absolute;inset:0;pointer-events:none}
+/* AVG 绘图层（第 3 期）：一块透明画布叠在立绘上、对话框下，
+   pointer-events:none 让点击穿透到底下的推进热区 */
+#l-avg{position:absolute;inset:0;pointer-events:none}
 .spr{position:absolute;bottom:0;height:88%;background-size:contain;
   background-position:bottom center;background-repeat:no-repeat;
   opacity:0;transition:opacity .28s ease;filter:drop-shadow(0 12px 30px rgba(0,0,0,.45))}
@@ -180,6 +183,10 @@ __STMG_THEME_CSS__
   <div class="layer ph" id="l-bg"></div>
   <div class="layer" id="l-pic"></div>
   <div id="spr-layer"></div>
+  <!-- AVG 绘图层（第 3 期）：S.AVG-button 画的形状画在这块画布上。
+       内部分辨率 = 剧本分辨率（__STMG_W__ x __STMG_H__），
+       随 stage 一起被 CSS transform 缩放，坐标系和桌面版完全一致。 -->
+  <canvas id="l-avg" width="__STMG_W__" height="__STMG_H__"></canvas>
 
   <div id="dialogue">
     <div id="namebox"></div>
@@ -548,6 +555,11 @@ function* execStmt(s){
       break;
     }
     case "set": assign(s.name, evalExpr(s.expr)); break;
+    case "avg_def":
+      // SET 名字: 定义的 AVG 绘图变量：登记进表，画的时候（avg_button）才用。
+      // 「定义」本身不产事件，和桌面版 runtime.exec_block 的 avg_def 分支一致。
+      AVGDEFS[s.name] = s.ops || [];
+      break;
     case "question": {
       const p = s.prompt ? stripQuotes(s.prompt) : (STM.Q || "");
       if (p) STM.Q = p;
@@ -595,6 +607,36 @@ function* doCall(s){
     else if (m === "jump"){
       if (LABELS[a0] != null) throw new Jump(LABELS[a0] + 1);
       yield {t:"toast", text:'S.jump("' + a0 + '") 找不到这个标签'};
+    }
+    else if (m === "avg_button"){
+      /* AVG 绘图（第 3 期）：语义对齐桌面版 runtime.do_call 的 avg_button 分支。
+         两种坐标写法都认（发布时 Python 解析器已把 x:0 归一成 kwargs.x）：
+           S.AVG-button(x:100, y:50, "box")   冒号写法，形状在第 1 个位置参数
+           S.AVG-button(100, 50, "box")       顺序写法，形状在第 3 个
+         坐标可能是变量/算式，evalExpr 求值；算不出来画在正中间，不崩。 */
+      const hasXY = kw.x != null || kw.y != null;
+      const xs = hasXY ? kw.x : (args[0] || 0);
+      const ys = hasXY ? kw.y : (args[1] || 0);
+      const rawShape = hasXY ? (kw.shape != null ? kw.shape : (args[0] || ""))
+                             : (args.length > 2 ? args[2] : (kw.shape || ""));
+      let xv = 0, yv = 0;
+      try { xv = Number(evalExpr(String(xs))) || 0; } catch (e) {}
+      try { yv = Number(evalExpr(String(ys))) || 0; } catch (e) {}
+      const name = stripQuotes(rawShape);
+      const ev = {t:"avg", action:"draw", shape:name, x:xv, y:yv};
+      if (kw.color) ev.color = kw.color;
+      if (kw.size != null){ try { ev.size = Number(evalExpr(String(kw.size))); } catch (e) {} }
+      if (kw.width != null){ try { ev.width = Number(evalExpr(String(kw.width))); } catch (e) {} }
+      // 用户自定义形状：把 SET 定义的指令塞进事件（事件自带全部信息，
+      // 渲染层不用回头问引擎）。没定义过的名字 ops 为空 -> 画不出来但不崩，
+      // 对齐桌面版「发布版静默跳过」的行为。
+      if (AVG_PRIMITIVES.indexOf(String(name).toLowerCase()) < 0)
+        ev.ops = AVGDEFS[name] || [];
+      yield ev;
+    }
+    else if (m === "avg_clear"){
+      // S.AVG-clear()：整层擦掉
+      yield {t:"avg", action:"clear"};
     }
     else if (m === "end") throw new Jump(BODY.length);
     else yield {t:"toast", text:"S." + s.method + " 还没有对应实现"};
@@ -1117,6 +1159,108 @@ function setSprite(path, tag, pos){
 }
 function clearSprites(){ for (const k in sprites) sprites[k].classList.remove("on"); }
 
+/* ---------- AVG 绘图层（第 3 期）----------
+   语义和桌面版 stmg/avg.py 逐行对齐（网页 import 不了 Python，这里是一份
+   手工翻译版）：改任何一边的绘图规则，必须同步改另一边，两边画出来才有得比。
+
+   坐标系（和桌面版一致）：
+     剧本给的是「数学坐标」：原点在画面正中，x 向右、y 向上；
+     canvas 的 y 轴向下，所以画的时候 y 要翻转： oy = 高/2 - y */
+const AVG_PRIMITIVES = ["box", "circle"];          // 引擎内置形状名
+const AVG_DEFAULT_COLOR = "#ffffff";               // 默认线色（对齐 avg.py）
+const AVG_DEFAULT_SIZE = 64;                       // 默认形状大小（box 边长 / 圆直径）
+const AVG_DEFAULT_WIDTH = 3;                       // 默认线宽
+
+let avgShapes = [];                                // 当前 AVG 图层上的形状（事件原样存）
+const elAvg = $("l-avg");
+
+/* 跑一遍海龟绘图指令，返回几何 {strokes:[...], circles:[...]}。
+   一支看不见的笔：从 (0,0)（= S.AVG-button 的落点）出发、默认朝右、落笔。 */
+function avgRunTurtle(ops, color, width){
+  let x = 0, y = 0, head = 0, pen = true;
+  let cc = String(color || AVG_DEFAULT_COLOR);
+  let cw = Math.max(1, parseInt(width || AVG_DEFAULT_WIDTH, 10) || AVG_DEFAULT_WIDTH);
+  const strokes = [], circles = [];
+  let cur = null;                                  // 当前正在画的那条折线
+  const lineTo = (nx, ny) => {
+    if (pen){
+      if (!cur){ cur = {c:cc, w:cw, pts:[x, y]}; strokes.push(cur); }
+      cur.pts.push(nx, ny);                        // 接在当前折线后面
+    } else cur = null;                             // 抬笔移动：下次落笔另起一段
+    x = nx; y = ny;
+  };
+  for (const op of (ops || [])){
+    const name = String(op[0] || "").toLowerCase();
+    const arg = op.length > 1 ? op[1] : null;
+    if (name === "go" || name === "back"){
+      let d = Number(arg || 0); if (name === "back") d = -d;   // 后退 = 反方向
+      const rad = head * Math.PI / 180;
+      lineTo(x + d * Math.cos(rad), y + d * Math.sin(rad));    // 0 度朝右，逆时针为正
+    }
+    else if (name === "left") head += Number(arg || 0);
+    else if (name === "right") head -= Number(arg || 0);
+    else if (name === "goto"){ const p = arg || [0, 0]; lineTo(Number(p[0]) || 0, Number(p[1]) || 0); }
+    else if (name === "up"){ pen = false; cur = null; }
+    else if (name === "down") pen = true;
+    else if (name === "color"){ cc = String(arg || AVG_DEFAULT_COLOR); cur = null; }  // 换色断线
+    else if (name === "width"){ cw = Math.max(1, parseInt(arg || AVG_DEFAULT_WIDTH, 10) || 1); cur = null; }
+    else if (name === "circle") circles.push({c:cc, w:cw, cx:x, cy:y, r:Math.abs(Number(arg) || 10)});
+    /* 其他名字：跳过（解析期已拦过，这里双保险，对齐 avg.py） */
+  }
+  return {strokes:strokes, circles:circles};
+}
+
+/* 一条 AVG 事件 -> 几何。box/circle 是内置形状，其他按 ops 跑海龟绘图；
+   ops 为空（没 SET 定义过）时跑出来是空几何，什么都不画、也不报错。 */
+function avgItemGeometry(item){
+  const name = String(item.shape || "").toLowerCase();
+  const color = item.color || AVG_DEFAULT_COLOR;
+  const width = item.width != null ? item.width : AVG_DEFAULT_WIDTH;
+  const size = item.size != null ? item.size : AVG_DEFAULT_SIZE;
+  if (name === "box"){
+    const h = size / 2;   // 以落点为中心的正方形，五个点首尾闭合
+    return {strokes:[{c:color, w:Math.max(1, width|0),
+                      pts:[-h,-h, h,-h, h,h, -h,h, -h,-h]}], circles:[]};
+  }
+  if (name === "circle")
+    return {strokes:[], circles:[{c:color, w:Math.max(1, width|0),
+                                  cx:0, cy:0, r:size/2}]};
+  return avgRunTurtle(item.ops || [], color, width);
+}
+
+/* 整层重画：AVG 图层东西不多，每次全清全画，省得做增量维护。 */
+function drawAvgLayer(){
+  if (!elAvg) return;
+  const ctx = elAvg.getContext("2d");
+  ctx.clearRect(0, 0, elAvg.width, elAvg.height);
+  for (const item of avgShapes){
+    const geo = avgItemGeometry(item);
+    // 落点：画面正中 + 剧本坐标（y 翻转，见文件头上面的坐标系说明）
+    const ox = elAvg.width / 2 + Number(item.x || 0);
+    const oy = elAvg.height / 2 - Number(item.y || 0);
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    for (const st of geo.strokes){
+      const p = st.pts;
+      if (p.length < 4) continue;                  // 少于两个点画不了线
+      ctx.beginPath();
+      ctx.moveTo(ox + p[0], oy - p[1]);
+      for (let i = 2; i < p.length - 1; i += 2) ctx.lineTo(ox + p[i], oy - p[i + 1]);
+      ctx.strokeStyle = st.c; ctx.lineWidth = Math.max(1, st.w|0); ctx.stroke();
+    }
+    for (const c of geo.circles){
+      ctx.beginPath();
+      ctx.arc(ox + c.cx, oy - c.cy, Math.max(1, c.r), 0, Math.PI * 2);
+      ctx.strokeStyle = c.c; ctx.lineWidth = Math.max(1, c.w|0); ctx.stroke();
+    }
+  }
+}
+/* avg 事件进来：draw = 摞一个形状，clear = 整层擦掉（对齐 session._apply） */
+function applyAvg(ev){
+  if (ev.action === "clear") avgShapes = [];
+  else avgShapes.push(ev);
+  drawAvgLayer();
+}
+
 /* ---------- 音频 ---------- */
 const AUDIO = {bgm:null, se:null, voice:null};
 function playAudio(kind, path, loop){
@@ -1323,6 +1467,9 @@ function clearStage(){
   elText.innerHTML = "";
   elName.classList.remove("on");
   sprites = {}; elSpr.innerHTML = "";
+  // AVG 绘图层（第 3 期）：重开 / 读档时把画布擦干净
+  avgShapes = [];
+  if (elAvg) elAvg.getContext("2d").clearRect(0, 0, elAvg.width, elAvg.height);
   elBg.style.backgroundImage = ""; elBg.className = "layer ph";
   elPic.style.backgroundImage = ""; elPic.className = "layer";
   HISTORY = []; SAYN = 0;

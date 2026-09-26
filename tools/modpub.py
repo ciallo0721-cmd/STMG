@@ -84,6 +84,17 @@ python start.py script.stm --mod {mid}
 
 
 def banner_for(man, mid, issues):
+    """按 manifest 把安装说明模板 BANNER 填成最终文本。
+
+    参数：
+      man     美化包 manifest 字典（mod.manifest 的返回），里面可能有
+              name / version / author / desc / engine 等字段；
+      mid     美化包目录名（也是 mod/ 下的启用 id）；
+      issues  预留参数，目前没用到（校验结果已体现在 main 的打印里）。
+    返回：填好所有占位符的安装说明 Markdown 字符串。
+    被谁调用：main 在写出「安装说明.md」时调它。模板里强调「这是美化包
+              不是本体」，避免拿到的人误以为是完整游戏。
+    """
     return BANNER.format(
         name=man.get("name") or mid,
         mid=mid,
@@ -96,6 +107,16 @@ def banner_for(man, mid, issues):
 
 
 def report_for(mid, man, issues, files):
+    """生成一份人类可读的「美化包校验报告」纯文本。
+
+    参数：
+      mid     美化包 id（目录名）；
+      man     manifest 字典；
+      issues  mod.verify 返回的问题列表（每项 (level, msg)）；
+      files   该包包含的文件相对路径列表（collect_files 的返回）。
+    返回：拼好的多行字符串，含检查时间、检查项、结果（通过/错误数）、
+          提示列表、文件清单。main 把它写进「校验报告.txt」随包发出。
+    """
     lines = ["STMG 美化包校验报告",
              "美化包：%s（%s）" % (man.get("name") or mid, mid),
              "检查时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -119,6 +140,13 @@ def report_for(mid, man, issues, files):
 
 
 def collect_files(path):
+    """递归列出 path 下的所有文件，返回用「/」分隔的相对路径列表（排序后）。
+
+    参数 path：美化包目录。
+    返回：相对路径字符串列表，如 ["gui.py", "theme.css", "example_sakura/mod.json"]。
+          统一把 Windows 的反斜杠换成「/」，保证后面写进 zip / 报告时一致。
+    被谁调用：main 在打包前用它对包做「文件清单」，既写进校验报告也用于打 zip。
+    """
     out = []
     for dirpath, _dirs, files in os.walk(path):
         for fn in sorted(files):
@@ -128,11 +156,35 @@ def collect_files(path):
 
 
 def safe_name(s):
+    """把任意字符串清洗成「安全的目录 / 文件名」。
+
+    参数 s：原始名字（通常是 manifest 里的 name）。
+    做法：去掉 Windows / 各平台非法的文件名字符（\\ / : * ? " < > |），
+          去首尾空白；洗完要是空串就退回默认的「美化包」三字，避免建出空名目录。
+    返回：可安全直接拼进路径的字符串。main 用它对产物目录和 zip 命名。
+    """
     s = "".join(c for c in str(s) if c not in '\\/:*?"<>|').strip()
     return s or "美化包"
 
 
 def main(argv):
+    """modpub.py 的命令行入口：把一个合规的美化包打包成「XXX_美化包」目录 + zip。
+
+    参数 argv：sys.argv（含程序名）。用法：
+        python tools/modpub.py <id 或路径> [--out 目录] [--no-zip | --zip]
+    流程：
+      1. 解析参数：无参数 / -h 打印模块 docstring 当帮助；--out 指定产物根目录，
+         --no-zip 不打压缩包（默认打）；
+      2. 用 mod.find_mod / 目录探测定位美化包，找不到返回 1；
+      3. 【严格校验】先跑 mod.verify，有 error 级别违规直接拒绝打包、返回 1，
+         不给 --force 后门（美化包的安全底线：只能声明外观）；
+      4. 在 dist/mods/ 下建「<名字>_美化包/」，把整包 copytree 进去，
+         再写出「安装说明.md」（banner_for）和「校验报告.txt」（report_for）；
+      5. 需要的话把产物打成 zip（ZIP_DEFLATED）；
+      6. 打印产物清单与「这是美化包不是本体」的提醒，返回 0。
+    被谁调用：文件末尾 `if __name__ == "__main__"` 里 sys.exit(main(sys.argv))。
+    删了会怎样：发布美化包只能靠它，没它就只能让人手动拷目录、没有安装说明。
+    """
     args = argv[1:]
     if not args or args[0] in ("-h", "--help"):
         print(__doc__)

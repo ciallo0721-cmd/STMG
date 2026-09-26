@@ -160,6 +160,7 @@ def roots(root=None):
 
 
 def mod_dir_of(root):
+    """算出某个根目录下的 `mod/` 目录在哪（root 拼上 "mod"）。"""
     return os.path.join(os.path.abspath(root), MOD_DIRNAME)
 
 
@@ -284,6 +285,11 @@ def find_mod(mod_id, root=None):
 # 静态校验
 # --------------------------------------------------------------------------- #
 def _strip_comments(text, ext):
+    """把 CSS / JS 里的注释抹掉再交给正则扫。
+
+    注释里的字眼（如 `url(http://...)`）不该被当成真实的违规写法，
+    所以先去掉注释，免得误报。HTML 注释这里不处理（美化包不许带 HTML）。
+    """
     if ext == ".css":
         return re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     if ext == ".js":
@@ -293,6 +299,13 @@ def _strip_comments(text, ext):
 
 
 def _scan(text, rules, label, issues):
+    """用一组正则规则扫文本，命中就把「(error, 人话说明)」塞进 issues。
+
+    rules 里每一项可能是：
+        (正则, 说明)            用默认 re.I（大小写不敏感）
+        (正则, 说明, flags)     自己给 flags（如 0 表示大小写敏感）
+    label 是文件名，用来拼出「哪个文件的哪条违规」。
+    """
     for rule in rules:
         pat, why = rule[0], rule[1]
         flags = rule[2] if len(rule) > 2 else re.I
@@ -536,10 +549,12 @@ def _read_config(gui_path):
 
 
 def errors_of(issues):
+    """从 (级别, 说明) 列表里挑出所有 error 级的说明文案。"""
     return [m for lv, m in issues if lv == "error"]
 
 
 def warnings_of(issues):
+    """从 (级别, 说明) 列表里挑出所有 warn 级的说明文案（不阻断发布）。"""
     return [m for lv, m in issues if lv == "warn"]
 
 
@@ -711,6 +726,7 @@ def create_mod(root, mod_id, name=None, author=None, desc=None, overwrite=False)
 # 给命令行用的小工具
 # --------------------------------------------------------------------------- #
 def brief(mod):
+    """把一个美化包的元信息压成一行简短文本，命令行列表用。"""
     tag = "（默认）" if mod.get("default") else ""
     return "%-18s %-12s v%-8s %s%s" % (mod["id"], mod["name"][:12],
                                       mod["version"], mod["author"], tag)

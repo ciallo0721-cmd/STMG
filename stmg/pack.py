@@ -18,6 +18,8 @@ import struct
 
 from . import crypto
 
+# 资源包内文件的虚拟路径前缀。剧本/界面里写 "stmgpack:/music/bgm.mp3" 时，
+# 走下面 open_binary/exists 的统一入口去打包后的资源里取，而不是去真实磁盘找。
 PREFIX = "stmgpack:/"
 
 _current = None
@@ -120,8 +122,14 @@ def build(root, patterns, out_path, key):
 
 
 def build_from_mapping(data, out_path, key):
-    """从 {rel: 字节} 直接构建加密资源包（补丁工具复用同一套格式与密钥）。"""
+    """从 {rel: 字节} 直接构建加密资源包（补丁工具复用同一套格式与密钥）。
+
+    产物 = [4字节大端头长][JSON 索引][所有文件内容顺序拼接]，整块再加密。
+    索引里每个资源记录 o(偏移)/n(长度)/hash(sha256 前16位)/size，
+    老版本「无 hash 索引」也能被 AssetPack 读（向后兼容）。
+    """
     index, blob, off = {}, bytearray(), 0
+    # 按 rel 排序，保证每次打出来的字节顺序稳定（补丁/校验可比）
     for rel in sorted(data):
         d = data[rel]
         index[rel] = {"o": off, "n": len(d),
@@ -129,9 +137,11 @@ def build_from_mapping(data, out_path, key):
                       "size": len(d)}
         blob.extend(d)
         off += len(d)
+    # 索引写成 JSON（中文不转义，便于人读），再拼上文件正文
     head = json.dumps({"files": index}, ensure_ascii=False).encode("utf-8")
     raw = struct.pack(">I", len(head)) + head + bytes(blob)
     with open(out_path, "wb") as f:
+        # 整块加密：外部拿不到明文，也改不了单个文件
         f.write(crypto.encrypt(raw, key))
     return len(index), os.path.getsize(out_path)
 
@@ -152,12 +162,15 @@ class AssetPack(object):
         self.blob = raw[4 + hlen:]
 
     def has(self, rel):
+        """资源包里有没有这个 rel（不含补丁逻辑，只看主包索引）。"""
         return rel in self.index
 
     def read(self, rel):
+        """按 rel 取出原始字节；没有这个资源抛 KeyError（调用方负责兜底）。"""
         item = self.index.get(rel)
         if not item:
             raise KeyError(rel)
+        # 用索引里的偏移/长度从 blob 里切一段
         return self.blob[item["o"]:item["o"] + item["n"]]
 
     @property

@@ -29,17 +29,26 @@ if ROOT not in sys.path:
 
 from stmg import crypto, options as optmod, pack                 # noqa: E402
 
+# 默认纳入补丁的素材类型（图片 + 音频）。用户没在 options.stm 的 dec 里
+# 指定时采用这份清单；只比对这些资源文件，剧本 / 代码不进补丁。
 DEFAULT_PATTERNS = ["*.png", "*.jpg", "*.jpeg", "*.webp",
                     "*.mp3", "*.wav", "*.ogg", "*.flac"]
 
 
 def _load_old(old_arg, key):
-    """返回 (old_index, old_data) —— 旧版本每个资源的 {rel: (hash16, size, bytes)}。
+    """读旧版本资源，返回 {rel: (hash16, size, bytes)} —— 用于和新版本做差。
 
+    参数：
+      old_arg  旧发布目录（里面找 assets.stmdec）或旧 assets.stmdec 文件本身；
+      key      解密口令（和当初打包时一致，否则抛 DecryptError）。
     old_arg 可以是：
       - 一个目录：里面找 assets.stmdec；
       - 一个 .stmdec 文件：直接当资源包读；
-      - 不存在 / 找不到：当作空（即新项目里的全都是「新增」）。
+      - 不存在 / 找不到：当作空 dict 返回（即「无旧版」，新项目里全是「新增」）。
+    返回：rel（相对路径）-> (sha256 前 16 位, 字节数, 原文 bytes) 的字典。
+    注意：老格式索引可能没有 hash 字段，这里当场算一个 sha256[:16] 顶上，
+          保证新旧能逐文件比对。
+    删了会怎样：main 拿不到旧版基线，整个「增量」比对无法进行。
     """
     stmdec = None
     if os.path.isfile(old_arg) and old_arg.lower().endswith(".stmdec"):
@@ -70,7 +79,14 @@ def _load_old(old_arg, key):
 
 
 def _scan_new(project, patterns):
-    """扫描新项目，返回 {rel: (hash16, size, bytes)}。"""
+    """扫描新项目目录，返回 {rel: (hash16, size, bytes)}。
+
+    参数：
+      project   新项目根目录（要发布的那一版）；
+      patterns  纳入的素材通配符列表（见 DEFAULT_PATTERNS）。
+    返回：和 _load_old 同构的字典——rel -> (sha256 前 16 位, 字节数, bytes)，
+          这样两份字典可以直接按 key 和 hash 做差，找出新增 / 改动 / 删减。
+    """
     data = pack._scan(project, patterns)
     out = {}
     for rel, d in data.items():
@@ -79,6 +95,21 @@ def _scan_new(project, patterns):
 
 
 def main(argv):
+    """patch.py 的命令行入口：对比新旧两版，生成「增量补丁包 + 索引」。
+
+    参数 argv：sys.argv（含程序名）。用法：
+        python tools/patch.py <项目> --old <旧发布/旧 assets.stmdec> \
+            --out <输出目录> [--key 口令]
+    流程：
+      1. 解析位置参数 <项目> 与 --old / --out / --key；
+      2. 口令优先级：命令行 --key > 新项目 options.stm 的 Enc > 空口令；
+      3. 用 patterns（options.dec 或默认）扫新项目、读旧版，逐文件比 hash；
+      4. 算出 changed（新增/改动）与 deleted（旧有但新无），两者都空就直接返回 0；
+      5. 清空旧产物后，把 changed 用 pack.build_from_mapping 打成加密的 patch.stmdec，
+         再写 patch.json（version/files/deleted），引擎启动优先读它；
+    返回：0 成功，2 参数/路径错误。补丁走 pack 的加密格式，不另造加密。
+    被谁调用：文件末尾 `if __name__ == "__main__"` 里 sys.exit(main(sys.argv))。
+    """
     args = argv[1:]
     if not args:
         print(__doc__)

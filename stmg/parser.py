@@ -9,6 +9,7 @@ import os
 import re
 
 from .errors import Issue, level_name  # noqa: F401  (level_name 供外部复用)
+from . import avg as avgmod   # AVG 绘图：SET 块里的指令编译用它（avg.py 不依赖本包其他模块）
 
 COMMENT_RE = re.compile(r"<--.*?-->", re.S)
 
@@ -37,7 +38,10 @@ PY_DELAY_RE = re.compile(r"^(?:delay\s*=\s*)?(\d+(?:\.\d+)?)\s*s?$", re.I)
 PY_DELAY_DEFAULT = 3.0     # 代码块里 print 出来的行，默认每行隔 3 秒
 PY_DELAY_MAX = 60.0
 
-CALL_RE = re.compile(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\((.*)\)\s*$", re.S)
+# 函数调用 S.play(...) / R.api(...) / S.AVG-button(...)。
+# 方法名里允许连字符（AVG-button 这种）——脚本作者写起来顺口，
+# 解析后统一把 - 换成 _，所以 AVG-button 和 AVG_button 是同一个函数。
+CALL_RE = re.compile(r"^([A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]*)*)\s*\((.*)\)\s*$", re.S)
 # stm.os(...) —— 受控文件操作。外层只认 stm.os，内层再拆出 操作(path) 和可选的 ,"旧"to"新"
 STM_OS_RE = re.compile(r"^\s*stm\.os\s*\((.*)\)\s*$", re.I | re.S)
 STM_OS_INNER_RE = re.compile(
@@ -50,6 +54,10 @@ ELSE_RE = re.compile(r"^Else\s*:\s*$", re.I)
 CHOOSE_RE = re.compile(r"^Choose\s*:\s*$", re.I)
 QUESTION_RE = re.compile(r"^Question\s*:\s*(.*)$", re.I)
 SET_RE = re.compile(r"^SET\s+([\w.]+)\s*=\s*(.*)$", re.I)
+# SET 名字: （没有 = 号，后面跟一个缩进的绘图指令块）—— AVG 绘图变量。
+# 和 SET x = 1 的赋值是两回事：这种块定义的是一幅可以用
+# S.AVG-button(x, y, "名字") 画出来的「海龟绘图」，详见 stmg/avg.py。
+AVG_SET_RE = re.compile(r"^SET\s+([A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff]*)\s*:\s*$", re.I)
 ASSIGN_RE = re.compile(r"^([A-Za-z_][\w.]*)\s*=\s*(.+)$", re.S)
 # 台词文本支持 "…" + 变量 这种拼接（运行时 _say_text 会 eval_expr 求值）。
 # 所以文本部分用 ".* 吃掉到行尾（含 + 号），而不是钉死成单个引号串。
@@ -76,6 +84,11 @@ IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".avif")
 
 
 def name_is_reserved(name):
+    """判断 name 是不是「不能当标签用」的保留字。
+
+    choose / if / else ... 这些词本来就不能做标签名；但 start 例外——
+    它是合法标签（Start: 作为剧本入口），所以从保留集里把 start 拎出去。
+    """
     return name.lower() in RESERVED and name.lower() != "start"
 
 
@@ -129,6 +142,11 @@ class Script(object):
 # 工具
 # --------------------------------------------------------------------------- #
 def _norm_quotes(s):
+    """把全角引号（" " ' '）统一换成半角（" '）。
+
+    设计稿通篇用全角引号，玩家照抄进 .stm 会解析失败；这里无脑纠正一遍，
+    免得用户每句台词都要手动切输入法。QUOTE_FIX 表里就是这两对映射。
+    """
     for a, b in QUOTE_FIX.items():
         s = s.replace(a, b)
     return s
@@ -251,7 +269,13 @@ def parse_args(s):
             i += 1
             continue
         key = None
-        m = re.match(r"([A-Za-z_]\w*)\s*=", s[i:])
+        # key=值 和 key:值 两种写法都认（冒号写法是 AVG 用的：
+        # S.AVG-button(x:0, y:0, "box")）。唯一的例外是 http:// ——
+        # 冒号后面紧跟 // 的不当成 key，免得把 URL 撕成 key="http"、值="//..."
+        m = re.match(r"([A-Za-z_]\w*)\s*([=:])", s[i:])
+        if m and m.group(2) == ":" and \
+                s[i + m.end():].lstrip().startswith("//"):
+            m = None
         if m:
             key = m.group(1)
             i += m.end()
@@ -287,6 +311,11 @@ def _indent_of(raw):
 
 
 def _looks_like_image(v):
+    """猜 v 是不是一个「图片路径」。
+
+    三种信号都认：以图片后缀结尾（.png 等）/ 含斜杠（路径）/ 含反斜杠。
+    S.character("...") 拿到这种值就当立绘显示，否则当角色名（define）。
+    """
     v = (v or "").lower()
     return v.endswith(IMAGE_EXT) or "/" in v or "\\" in v
 
@@ -543,6 +572,28 @@ def _parse_lines(lines, issues, pyblocks=None, base_dir=None, incl_chain=None):
                 stmts.append({"k": "question", "prompt": prompt, "line": n})
                 continue
 
+            # --- SET 名字: （AVG 绘图变量，缩进块里是海龟绘图指令）---
+            m = AVG_SET_RE.match(s)
+            if m:
+                pos[0] += 1
+                # 收集下面所有缩进更深的行作为绘图块（和 If / Repeat 收块的规则一致）
+                body_lines = []
+                while pos[0] < len(items) and items[pos[0]][1] > indent:
+                    body_lines.append(items[pos[0]][2])
+                    pos[0] += 1
+                if not body_lines:
+                    issues.append(Issue(n, "SET %s: 下面没写任何绘图指令"
+                                        % m.group(1),
+                                        "在它下面缩进写 go(10px)、left(90) 这样的指令"))
+                # 指令编译：写错的行在这里就报出来（带行号），不拖到运行时
+                ops, op_issues = avgmod.compile_ops(body_lines)
+                for ln_text, err in op_issues:
+                    issues.append(Issue(n, "SET %s: %s" % (m.group(1), err),
+                                        "对照 stmg/avg.py 文件头的语法说明改一下"))
+                stmts.append({"k": "avg_def", "name": m.group(1),
+                              "ops": ops, "line": n})
+                continue
+
             # --- SET name = value ---
             m = SET_RE.match(s)
             if m:
@@ -582,11 +633,14 @@ def _parse_lines(lines, issues, pyblocks=None, base_dir=None, incl_chain=None):
                 pos[0] += 1
                 continue
 
-            # --- 函数调用 S.play(...) / R.api(...) / STM.display(...) ---
+            # --- 函数调用 S.play(...) / R.api(...) / S.AVG-button(...) ---
             m = CALL_RE.match(s)
             if m:
                 pos[0] += 1
-                target, raw_args = m.group(1), m.group(2)
+                # 方法名里的连字符统一换成下划线：AVG-button -> AVG_button，
+                # 后面所有处理（do_call 等）只认下划线版本。
+                target = m.group(1).replace("-", "_")
+                raw_args = m.group(2)
                 args, kwargs = parse_args(raw_args)
                 parts = target.split(".")
                 obj = ".".join(parts[:-1]) if len(parts) > 1 else ""
@@ -640,6 +694,12 @@ def _parse_lines(lines, issues, pyblocks=None, base_dir=None, incl_chain=None):
 
 
 def _parse_header(lines, issues):
+    """解析剧本开头的「名称=值」设置块（size / title / font / lang ...）。
+
+    写错的行报「不是名称=值」；size 容错很大——large / size / resolution
+    三个键都认，分隔符接受 x / X / * / ×。识别不出时退回默认 800x600。
+    title / font / ver / lang 给不出就填默认值。
+    """
     header = {}
     for n, raw in lines:
         s = _norm_quotes(raw.strip())
@@ -669,6 +729,7 @@ def _parse_header(lines, issues):
 
 
 def parse_file(path):
+    """从磁盘读一个 .stm 文件并解析成 Script。等价 parse_text(读到的文本, path)。"""
     with open(path, "r", encoding="utf-8-sig") as f:
         text = f.read()
     return parse_text(text, path)
@@ -738,6 +799,23 @@ def _validate(sc):
     defined = set()
     labels = set()
     options = set()
+    avg_shapes = set()          # SET 名字: 定义过的 AVG 绘图变量名
+
+    # AVG 用的收集器：walk() 只递归 if 的分支，Repeat / While 里的语句它不进，
+    # 这里干脆按语句 dict 递归一遍，把嵌套多深的 avg_def / avg_button 都翻出来。
+    def _avg_scan(stmts):
+        for st in stmts or []:
+            if not isinstance(st, dict):
+                continue
+            if st.get("k") == "avg_def" and st.get("name"):
+                avg_shapes.add(st["name"])
+            for key in ("body", "else_body"):
+                if st.get(key):
+                    _avg_scan(st[key])
+
+    _avg_scan(sc.body)
+    _avg_scan(sc.ending)
+
     for s in sc.walk():
         if s["k"] == "define" and s["name"]:
             defined.add(s["name"])
@@ -763,6 +841,27 @@ def _validate(sc):
             sc.issues.append(Issue(
                 s["line"], "python 代码块里一行代码都没有",
                 "在 python: 下面写代码，或者把这个块删掉", "warn"))
+        # S.AVG-button(x, y, "形状")：形状必须是内置的 box/circle，
+        # 或者某个 SET 名字: 定义过的绘图变量。写了个谁都不认识的名字
+        # 不会崩（运行时静默跳过），但八成是拼错了，提前吼一声。
+        if s["k"] == "call" and s["obj"].upper() == "S" \
+                and s["method"].lower() == "avg_button":
+            shape = s["kwargs"].get("shape")
+            if shape is None:
+                # 没写 shape= 时形状在第 3 个位置参数；写法是 x:0,y:0,"box"
+                # 这种（坐标走 kwargs）时形状落在第 1 个位置参数
+                if len(s["args"]) >= 3:
+                    shape = s["args"][2]
+                elif s["args"] and ("x" in s["kwargs"] or "y" in s["kwargs"]):
+                    shape = s["args"][0]
+            if isinstance(shape, str) and shape.strip('"') \
+                    and shape.strip('"').lower() not in ("box", "circle") \
+                    and shape.strip('"') not in avg_shapes:
+                sc.issues.append(Issue(
+                    s["line"], "S.AVG-button 的形状「%s」既不是内置的 box/circle，"
+                               "也没有 SET 定义过" % shape.strip('"'),
+                    '先用 SET %s: 定义这个形状的画法，或者改用 "box" / "circle"'
+                    % shape.strip('"'), "warn"))
         if s["k"] == "call" and s["method"].lower() == "python" \
                 and s["obj"].upper() in ("STM", "STMG"):
             from .stdlib_api import check_library

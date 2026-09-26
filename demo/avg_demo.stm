@@ -1,0 +1,56 @@
+<
+Size=1280x720
+title=AVG 绘图演示
+Font="Microsoft YaHei"
+>
+<
+Start:
+S.character("小菲")
+S.cg("bg/room.png")
+
+"现在画面正中间是 (x:0, y:0)。往右 x 变大，往上 y 变大喵。"
+
+SET 三角形:
+    go(120px)
+    left(120)
+    go(120px)
+    left(120)
+    go(120px)
+
+SET 小房子:
+    color("#ff88bb")
+    go(100px)
+    left(90)
+    go(100px)
+    left(90)
+    go(100px)
+    left(90)
+    go(100px)
+    color("#7fb3ff")
+    left(90)
+    go(100px)
+    right(135)
+    go(70px)
+    right(90)
+    go(70px)
+
+"先画内置形状：一个方框在正中，一个圆圈在右上。"
+S.AVG-button(x:0,y:0,"box")
+S.AVG-button(x:180,y:150,"circle", color="#ffc44d", size=110, width=5)
+
+"再用 SET 定义的画：三角形在左下，小房子在右边。"
+S.AVG-button(-260,-180,"三角形", color="#6fd6a8")
+S.AVG-button(250,-100,"小房子")
+
+"坐标也能用变量：SET x = -100，然后 x:x*2 就是 -200。"
+SET x = -100
+S.AVG-button(x:x*2, y:-250, "circle", color="#ff5577", size=60)
+
+"画满了？S.AVG-clear() 一次擦干净。"
+S.AVG-clear()
+
+"擦掉了。AVG 系统还能当进度条、指北针、小游戏棋盘……随你发挥喵！"
+S.AVG-button(0,-200,"三角形", color="#c79bff", width=6)
+
+"感谢游玩"
+>

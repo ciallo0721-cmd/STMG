@@ -31,12 +31,23 @@ PASS, FAIL = [], []
 
 
 def check(name, cond, detail=""):
+    """断言登记器：跑一条自检项并印出 [OK] / [!!]。
+
+    参数：
+      name    这条自检项的名字（如「demo 没有语法错误」）；
+      cond    布尔，True 记进 PASS、False 记进 FAIL；
+      detail  仅当 cond 为 False 时附加的失败详情（错误清单等）。
+    作用：所有 test_* 函数都用它登记结果，main 最后汇总 PASS/FAIL 数量。
+    """
     (PASS if cond else FAIL).append(name)
     print("  [%s] %s%s" % ("OK" if cond else "!!", name,
                            ("  -> " + detail) if detail and not cond else ""))
 
 
 def test_parse():
+    """自检第 1 项：语法解析。用 parser.parse_file 读 demo 剧本，断言解析无错、
+    分辨率读对、台词 / If 条数符合预期。返回 sc 供后面需要剧本树的函数复用。
+    """
     print("\n== 1. 语法解析 ==")
     sc = parser.parse_file(DEMO)
     check("demo 没有语法错误", sc.error_count() == 0,
@@ -81,6 +92,9 @@ def test_headless(sc):
 
 
 def test_crypto():
+    """自检第 3 项：加解密往返。crypto.encrypt/decrypt 对称往返、错误口令被拒、
+    篡改一个字节能被发现；外加文件级 encrypt_file/load_text 往返。
+    """
     print("\n== 3. 加解密 ==")
     plain = "这是一段用来测试加解密的中文文本，混排 English 和 12345。".encode("utf-8") * 40
     blob = crypto.encrypt(plain, "p@ssword-123")
@@ -115,6 +129,9 @@ def test_crypto():
 
 
 def test_pack():
+    """自检第 4 项：资源包打包与读取。pack.build 把假素材打成 assets.stmdec，
+    断言文件数正确、pack.AssetPack 能读回内容、pack.open_binary/exists 正常。
+    """
     print("\n== 4. 资源包 ==")
     tmp = tempfile.mkdtemp()
     try:
@@ -252,6 +269,10 @@ def test_launcher():
 
 
 def test_stmos():
+    """自检第 8 项（编号重复，实为 stm.os）：受控文件操作。先断言 4 个 stm_os
+    语句的解析（操作名 / revision 的 find-replace），再真在临时目录跑
+    create/read/revision(留 .bak)/remove 四个底层函数，验证行为正确。
+    """
     print("\n== 8. stm.os 受控文件操作 ==")
     from stmg import stmos
     sc = parser.parse_text("\n".join([
@@ -292,6 +313,10 @@ def test_stmos():
 
 
 def test_pyblock():
+    """自检第 9 项：python 代码块。验证解析（代码行原样抠出、默认间隔 3 秒、
+    代码块后行号不串位、stmg.python("none") 合法）、无头推进时 print 变提示 +
+    行间等待、<python: 5 改间隔、发布版整块跳过且提示被忽略。
+    """
     print("\n== 9. python 代码块 ==")
     # 每一行后面标了它在本文件里的行号，专门用来验「切块之后行号有没有错位」
     src = "\n".join([
@@ -486,6 +511,13 @@ def test_mod():
 
 
 def main():
+    """selftest.py 的命令行入口：把上面 10 组自检按顺序跑一遍并汇总。
+
+    顺序：解析 → 无头推进 → 加解密 → 资源包 → 界面 → 项目管理 → 错误界面 →
+          启动器 → stm.os → python 块 → 美化包。全部 PASS 返回 0，有 FAIL 返回 1。
+    被谁调用：文件末尾 `if __name__ == "__main__"` 里 sys.exit(main())。
+    删了会怎样：改完引擎就没法一键回归，只能靠肉眼开窗口一个个试。
+    """
     print("STMG 自检")
     sc = test_parse()
     test_headless(sc)

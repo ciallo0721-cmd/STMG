@@ -22,6 +22,18 @@ from . import pack
 
 
 class Audio(object):
+    """三通道音频控制器：BGM / SE / Voice 各走各的路，互不打架。
+
+    声道布局（pygame.mixer 共 16 路）：
+        - BGM  走 pygame.mixer.music（独立音乐流，可循环），不在 16 通道里；
+        - Voice 独占通道 0，新语音直接打断旧语音；
+        - 打字音效独占通道 15，避免盖掉正在播的 BGM/SE；
+        - 普通 SE 由 mixer 在剩余通道里自动分配，可叠加。
+
+    淡入淡出不阻塞主循环：play_bgm/fade_out 只是登记一个 _fades 计划，
+    真正每帧插值在 update(dt) 里按时间做；播完/淡完的收尾也在 update 里触发。
+    """
+
     def __init__(self):
         self.ok = False
         self.cur_bgm = ""
@@ -203,6 +215,10 @@ class Audio(object):
 
     # ------------------------------------------------------------------ #
     def _play_sound(self, path, volume):
+        """底层放音（SE 用）。从资源包取字节建 Sound 并按音量播放。
+
+        mixer 自动挑一个空闲通道；失败（缺文件/格式不对）走兜底提示并返回 False。
+        """
         if not self.ok or not path or not pack.exists(path):
             return False
         try:

@@ -27,7 +27,14 @@ from stmg import mod                                         # noqa: E402
 
 
 def find_any(arg):
-    """参数可以是 id、也可以是路径。"""
+    """按「id 或路径」两种写法定位一个美化包的目录。
+
+    参数可以是 id、也可以是路径：
+      * 先当 id 调 mod.find_mod 找（能找到就返回其目录）；
+      * 找不到再把 arg 当文件系统路径，若是目录且里面有 MANIFEST_NAME
+        清单文件，就返回该目录；
+    返回：美化包目录路径，或 None 表示两路都没匹配上（调用方报「找不到」）。
+    """
     p = mod.find_mod(arg)
     if p:
         return p
@@ -38,7 +45,15 @@ def find_any(arg):
 
 
 def print_report(path, verbose=True):
-    """打印一个包的检查结果，返回 error 条数。"""
+    """打印一个美化包的详细体检报告，返回 error 条数（0 表示合格）。
+
+    参数：
+      path     美化包目录路径；
+      verbose  是否打印清单里的标题/版本/作者/说明（保留参数，目前始终打印）。
+    流程：读 manifest -> 打印基本信息 -> 调 mod.verify 拿 issues ->
+          分成 error / warn 两类打印，最后返回 error 数量。
+    返回：该包的 error 条数（int），main 拿它决定退出码。
+    """
     m = mod.manifest(path)
     title = m.get("name") or os.path.basename(path)
     print("=" * 62)
@@ -67,6 +82,12 @@ def print_report(path, verbose=True):
 
 
 def list_all():
+    """列出美化包目录下的所有包，并标记当前启用的是哪个、有无不合格。
+
+    无参数。流程：mod.list_mods 拿全部包 -> 用 mod.active_id 查当前启用 id ->
+    逐行打印（带 * 的是启用的），顺便调 mod.verify 看每个包合不合格、统计 bad 数。
+    返回：有不合格包返回 1，否则返回 0（给 shell / 启动器当退出码）。
+    """
     packs = mod.list_mods()
     active = mod.active_id()
     print("美化包目录：%s" % mod.find_dir())
@@ -92,6 +113,19 @@ def list_all():
 
 
 def main(argv):
+    """modcheck.py 的命令行入口：按参数分派到「列出 / 新建 / 启用 / 详情 / 全检」。
+
+    参数 argv：sys.argv（含程序名）。子命令：
+      无参数           -> list_all() 列出所有包
+      -h / --help      -> 打印模块 docstring 当帮助
+      --new <名>       -> mod.create_mod 生成新包骨架（可选 --author）
+      --use <id>       -> 校验通过后 mod.set_active 启用该包
+      --list           -> 同无参数的 list_all
+      --all            -> 把所有包逐个 print_report 一遍
+      <id 或路径>      -> find_any 定位后 print_report 打印详情
+    返回：各分派的退出码（有 error 通常返回 1，方便接 CI）。
+    被谁调用：文件末尾 `if __name__ == "__main__"` 里 sys.exit(main(sys.argv))。
+    """
     args = argv[1:]
     if not args:
         return list_all()

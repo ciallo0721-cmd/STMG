@@ -51,7 +51,8 @@ ENGINE_DIR = os.path.join(ROOT, "stmg")
 # 少一个文件整个包在浏览器里 import 不起来（发布时看着一切正常，打开一片空白）。
 WEB_MODULES = ["errors.py", "markdown.py", "parser.py", "runtime.py",
                "pack.py", "crypto.py", "stdlib_api.py", "stmos.py",
-               "options.py", "save.py", "web_bridge.py"]
+               "options.py", "save.py", "web_bridge.py",
+               "avg.py"]   # 第 3 期 AVG 绘图：runtime.py 顶层 import 了它，少一个全包起不来
 
 WEB_INIT = '''# -*- coding: utf-8 -*-
 """STMG 引擎（网页版子集：解析 + 运行 + 网页桥，不含界面）。"""
@@ -89,6 +90,12 @@ def js_lit(obj):
 
 
 def human(n):
+    """把字节数 n 格式化成带单位的人话字符串：B / KB / MB / GB / TB。
+
+    参数 n：字节数（int / float）。
+    返回：如 "3.2 MB" 这样的字符串，用于在发布报告里显示素材 / 产物大小。
+    逻辑：每满 1024 升一档，最后兜底 TB，避免大文件滚成长串数字。
+    """
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
             return "%.1f %s" % (n, unit)
@@ -103,11 +110,27 @@ def safe_font(name):
 
 
 def html_esc(s):
+    """把任意字符串转义成能在 HTML 里安全出现的文本。
+
+    参数 s：要塞进页面 title / 提示文案的字符串。
+    转义 & < > " 四个字符，避免剧本里的特殊符号破坏页面结构或被当成标签。
+    返回：转义后的字符串。发布时喂给 __STMG_TITLE__ 等占位符前先过它。
+    """
     return (str(s).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
 def collect_assets(proj_dir):
+    """递归扫描项目目录，收集要打进网页版的图片 / 音频素材。
+
+    参数 proj_dir：剧本项目根目录（脚本所在目录）。
+    做法：os.walk 遍历，跳过隐藏目录（. 开头）和 _ 开头目录，以及
+              custom / dist / game / assets / mod / mod_assets 这些非素材目录；
+              只挑扩展名落在 IMAGE_EXT / AUDIO_EXT 里的文件。
+    返回：(相对路径, 绝对路径) 的列表（已排序），相对路径用「/」分隔，
+              后面写进 assets/ 或内联成 data URI 都靠这个相对路径当 key。
+    被谁调用：main 在「素材」阶段调它，把游戏美术资源一起打包进网页产物。
+    """
     out = []
     for dirpath, dirs, files in os.walk(proj_dir):
         dirs[:] = [d for d in dirs if not d.startswith((".", "_"))
@@ -252,6 +275,23 @@ def theme_assets(css, theme, out, inline, inline_assets, do_assets=True):
 
 # --------------------------------------------------------------------------- #
 def main(argv):
+    """htmlpub.py 的命令行入口：把一个 STMG 项目发布成可双击打开的网页版。
+
+    参数 argv：sys.argv（含程序名）。用法见文件头模块 docstring（--out / --engine
+              / --inline / --no-assets / --mod / --pyodide 等开关）。
+    流程：
+      1. 解析开关，校验 --engine 只能是 wasm / js；
+      2. 读 script.stm 解析剧本，有语法错误直接拒绝发布（返回 2）；
+      3. 清掉旧产物目录后重建 out/；决定 Pyodide 来源（本地 > CDN > 自定义）；
+      4. 收集素材：--inline 转 base64 内联进 HTML，否则拷进 assets/；
+      5. 加载 custom/gui.py 与美化包（mod/）的 CSS/JS，处理 theme 里的 url(...)；
+      6. 把剧本 / 素材 / 引擎源码 / 选项等都塞进 webplayer.html 的占位符里，
+         写出 index.html；
+      7. 打印引擎 / 素材 / 网页版能力差异提醒（R.api 联网、stm.os 沙箱）。
+    返回：0 成功，2 参数 / 找不到剧本 / 剧本有错。
+    被谁调用：文件末尾 `if __name__ == "__main__"` 里 sys.exit(main(sys.argv))。
+    删了会怎样：发布网页版只能靠它，没它玩家就没法在浏览器里玩这个游戏。
+    """
     args = argv[1:]
     if not args:
         print(__doc__)

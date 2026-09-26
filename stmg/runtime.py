@@ -17,6 +17,8 @@
     toast    右上角提示              text
     wait     停一会儿再往下           dur    （python 代码块逐行显示用）
     python   STM.python 载入         name
+    avg      AVG 绘图层              action(draw/clear), shape, x, y, color,
+                                      size, width, ops   （第 3 期新增）
     fatal    跑不动了                message, trace
     end      剧本结束
 """
@@ -28,7 +30,7 @@ import random
 import re
 import types
 
-from . import pack, save as savemod, stdlib_api, stmos
+from . import avg, pack, save as savemod, stdlib_api, stmos
 from .errors import STMFatal, format_exception
 from .markdown import strip_quotes
 from .parser import PY_DELAY_DEFAULT
@@ -102,6 +104,22 @@ class ReturnSignal(Exception):
 
 
 class Runtime(object):
+    """把解析好的「语句树」解释成一条「事件流」的解释器。
+
+    核心机制是 Python 生成器——调用方用 next() 拿下一个事件，用 send()
+    把玩家的选择 / 输入塞回来。这样渲染层（pygame / 网页）完全不用关心
+    剧本结构，剧本也不用关心窗口和音频怎么播。
+
+    关键设计点：
+      * 所有「分支 / 随机 / 联网 / 文件操作」都做成**可重放**：运行时的每一步
+        玩家输入、骰子结果、联网返回都会写进 self.answers 流并随存档保存，
+        读档时整条流回放出来，于是带随机分支的剧情重开后走向完全一致
+        （见 _rand_draw / _take_answer / _take_record）。
+      * 开发模式专属：STM.python / python 代码块 / 调试提示，发布版整块跳过或静默。
+      * 副作用（背景 / 立绘 / 音频 / AVG 绘图）产出的事件里自带全部信息，
+        网页版拿到事件就能直接画，不用回头问 Python 引擎要数据。
+    """
+
     def __init__(self, script, options=None, dev_mode=True):
         self.script = script
         self.options = options
@@ -141,6 +159,11 @@ class Runtime(object):
         # 副作用回放计数（R.api / stm.os 的序号，仅用于 api_result/os_result 事件的 n 字段）
         self._api_n = 0
         self._os_n = 0
+
+        # AVG 绘图变量表：SET 名字: 定义的海龟绘图指令（名字 -> ops 列表）。
+        # 解析期已经把指令编译好了（stmg/avg.py 的 compile_ops），
+        # 这里只管登记，S.AVG-button(x, y, "名字") 时把 ops 塞进事件里。
+        self.avg_shapes = {}
         # 语音自动挂载用的计数：每个角色第几句、全局第几句
         self._say_char_count = {}
         self._say_global_count = 0
@@ -235,6 +258,13 @@ class Runtime(object):
         yield {"t": "end"}
 
     def exec_block(self, stmts):
+        """顺序执行一段语句列表，把每条翻译成的事件 yield 出去。
+
+        这是整个「语句 -> 事件」翻译的核心分派：say / choose / if / set /
+        call_sub / repeat / while / call ... 每种语句 k 都在这分支处理。
+        遇到 S.jump / Return 会通过 JumpSignal / ReturnSignal 异常跳出，
+        交给 run() 顶层统一处理标签跳转和子程序返回。
+        """
         for s in stmts:
             k = s["k"]
 
@@ -348,6 +378,11 @@ class Runtime(object):
             elif k == "call":
                 yield from self.do_call(s)
 
+            elif k == "avg_def":
+                # SET 名字: 定义的 AVG 绘图变量：登记进表里就完事，
+                # 不产事件——「定义」本身不是画面变化，画的时候（S.AVG-button）才发。
+                self.avg_shapes[s["name"]] = s.get("ops") or []
+
             elif k == "pycode":
                 yield from self.do_pyblock(s)
 
@@ -358,6 +393,13 @@ class Runtime(object):
     # 内建函数
     # ------------------------------------------------------------------ #
     def do_call(self, s):
+        """执行一条函数调用语句（S.xxx / R.xxx / STM.xxx / stmg.xxx）。
+
+        s 是 parser 解析出的 call 语句：obj 是点号前的对象（S/R/STM/STMG），
+        method 是方法名（已统一成下划线版本），args/kwargs 是实参。
+        这里按 (obj, method) 分派，把每类内建函数翻译成一或多个事件 yield 出去；
+        认不出的就 yield 一条「还没实现」的 toast 提示（不崩）。
+        """
         obj = (s["obj"] or "").upper()
         if obj == "STMG":                 # 剧本里 stmg.python(...) 和 STM.python(...) 等价
             obj = "STM"
@@ -425,6 +467,57 @@ class Runtime(object):
                 # 在「上一帧」和「下一帧」之间切换；没写 S.transition 时完全不影响。
                 yield {"t": "transition", "kind": (a0 or "fade"),
                        "dur": float(kw.get("dur", "0.4"))}
+            elif method == "avg_button":
+                # ---- AVG 绘图（第 3 期）：S.AVG-button(x, y, "形状") ----
+                # 两种坐标写法都认（解析器已把 x:0 归一成 kwargs["x"]）：
+                #   S.AVG-button(x:100, y:50, "box")   ← 冒号写法，形状在第 1 个位置参数
+                #   S.AVG-button(100, 50, "box")       ← 按顺序写，形状在第 3 个
+                # 坐标可以是算式/变量（SET 好感度 = 50 之后写 x:好感度*10 也行），
+                # 所以统一走 eval_expr 求值。
+                has_xy = "x" in kw or "y" in kw
+                xs = kw["x"] if "x" in kw else (args[0] if not has_xy and args else 0)
+                ys = kw["y"] if "y" in kw else (args[1] if not has_xy and len(args) > 1 else 0)
+                if has_xy:
+                    shape = kw.get("shape") or (args[0] if args else "")
+                else:
+                    shape = args[2] if len(args) > 2 else kw.get("shape", "")
+                shape = str(shape or "").strip()
+                try:
+                    x = float(self.eval_expr(str(xs)))
+                    y = float(self.eval_expr(str(ys)))
+                except STMFatal:
+                    x = y = 0.0        # 坐标算不出来就画在正中间，别让游戏崩
+                item = {"t": "avg", "action": "draw", "shape": shape,
+                        "x": x, "y": y}
+                # 可选参数：颜色 / 大小 / 线宽。写了才带上（没写渲染层用默认值）。
+                if kw.get("color"):
+                    item["color"] = str(kw["color"])
+                if kw.get("size") is not None:
+                    try:
+                        item["size"] = float(self.eval_expr(str(kw["size"])))
+                    except STMFatal:
+                        pass
+                if kw.get("width") is not None:
+                    try:
+                        item["width"] = max(1, int(float(self.eval_expr(str(kw["width"])))))
+                    except STMFatal:
+                        pass
+                # 用户自定义形状：把 SET 定义的绘图指令塞进事件，
+                # 渲染层（pygame / canvas）拿它现算几何——事件自带全部信息，
+                # 网页版不用回头问 Python 引擎要数据。
+                if shape.lower() not in avg.PRIMITIVES:
+                    ops = self.avg_shapes.get(shape)
+                    if ops is None:
+                        # 谁都不认识的名字：开发模式下提示一句，发布版静默跳过
+                        if self.dev_mode:
+                            yield {"t": "toast",
+                                   "text": 'S.AVG-button: 形状「%s」没有 SET 定义过，已跳过' % shape}
+                        return
+                    item["ops"] = ops
+                yield item
+            elif method == "avg_clear":
+                # S.AVG-clear()：把 AVG 画的所有东西一次擦干净
+                yield {"t": "avg", "action": "clear"}
             elif method == "jump":
                 if a0 in self._labels:
                     raise JumpSignal(self._labels[a0] + 1)

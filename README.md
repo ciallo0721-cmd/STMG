@@ -882,6 +882,10 @@ python tools/get_pyodide.py           # 约 13MB，下到 stmg/pyodide/
 `tools/htmlpub.py` 是把**已经写好的**剧本发布成网页。如果你连剧本都想在浏览器里写，
 用制作器：
 
+**线上直接用**：<https://ciallo0721-cmd.top/STMG/> —— 不用装任何东西，打开就能写。
+
+本地跑：
+
 ```bash
 python tools/build_maker.py          # 组装产物到 dist/maker/
 cd dist/maker
@@ -930,6 +934,18 @@ dist/maker/
 ```bash
 python tools/build_maker.py
 ```
+
+**发布到 GitHub Pages**（线上那份就靠这个）：
+
+```bash
+python tools/build_maker.py          # 先构建
+python tools/publish_pages.py        # 把 dist/maker 同步到 docs/
+git add docs && git commit -m "chore: 更新在线制作器" && git push
+```
+
+`docs/` 里全是生成物，别手改。仓库的 Pages 源已经设成 `main` 分支 `/docs` 目录，
+push 完自动重新部署，一般一两分钟生效。`docs/.nojekyll` 别删——少了它 Pages 会
+多跑一道 Jekyll，还会吞掉下划线开头的文件。
 
 细节见 `webmaker/README.md`。三条最容易踩的：
 

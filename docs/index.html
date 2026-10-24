@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>STMG 制作器 · 在线项目工坊</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============================ 顶栏 ============================ -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">S</span>
+      <span class="brand-name">STMG <em>制作器</em></span>
+    </div>
+
+    <div class="tb-group">
+      <button class="btn" id="btn-new" title="新建项目（Ctrl+N）">
+        <svg viewBox="0 0 16 16"><path d="M8 2v12M2 8h12"/></svg>新建
+      </button>
+      <button class="btn" id="btn-import" title="导入 .zip 或整个文件夹">
+        <svg viewBox="0 0 16 16"><path d="M8 11V2M4.5 5.5 8 2l3.5 3.5"/><path d="M2 11v3h12v-3"/></svg>导入
+      </button>
+      <button class="btn" id="btn-export" title="导出可独立运行的网页版">
+        <svg viewBox="0 0 16 16"><path d="M8 2v9M4.5 7.5 8 11l3.5-3.5"/><path d="M2 12v2h12v-2"/></svg>导出
+      </button>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="project-chip" id="project-chip" title="点击重命名">
+      <span class="dot" id="dirty-dot"></span>
+      <span id="project-name">未命名项目</span>
+      <span class="chip-sub" id="project-saved">已保存</span>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <div class="tb-group">
+      <button class="btn ghost" id="btn-check" title="体检剧本（Ctrl+B）">
+        <svg viewBox="0 0 16 16"><path d="M3 8.5 6 11.5 13 4.5"/></svg>体检
+      </button>
+      <button class="btn primary" id="btn-run" title="运行预览（F5）">
+        <svg viewBox="0 0 16 16" class="fill"><path d="M4.5 2.8v10.4L13 8z"/></svg>运行
+      </button>
+      <button class="btn" id="btn-stop" title="停止（Shift+F5）" disabled>
+        <svg viewBox="0 0 16 16" class="fill"><rect x="4" y="4" width="8" height="8" rx="1.2"/></svg>停止
+      </button>
+      <button class="btn icon" id="btn-preview-full" title="预览全屏">
+        <svg viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>
+      </button>
+    </div>
+
+    <div class="engine-badge" id="engine-badge" title="引擎状态">
+      <span class="pulse"></span><span id="engine-text">引擎未启动</span>
+    </div>
+  </header>
+
+  <!-- ============================ 主体 ============================ -->
+  <main id="main">
+
+    <!-- ---------- 侧栏：文件树 ---------- -->
+    <aside id="sidebar">
+      <div class="side-head">
+        <span>项目文件</span>
+        <div class="side-actions">
+          <button class="mini" id="btn-new-file" title="新建文件">＋</button>
+          <button class="mini" id="btn-upload" title="上传素材">↑</button>
+          <button class="mini danger" id="btn-del-file" title="删除当前文件">−</button>
+        </div>
+      </div>
+      <div id="tree" class="tree"></div>
+      <div class="side-foot">
+        <div class="drop-hint" id="drop-hint">把 .zip 或图片 / 音频拖进来</div>
+        <div class="storage-line"><span id="asset-count">0 个素材</span> · <span id="asset-size">0 B</span></div>
+      </div>
+    </aside>
+
+    <div class="vsplit" id="vsplit-a" data-target="sidebar"></div>
+
+    <!-- ---------- 中间：编辑器 ---------- -->
+    <section id="editor-pane">
+      <div class="tabbar">
+        <div id="tabs" class="tabs"></div>
+        <div class="tabbar-right">
+          <button class="mini" id="btn-find" title="查找替换（Ctrl+F）">查找</button>
+          <button class="mini" id="btn-issues-toggle" title="折叠问题面板">问题 <b id="issue-badge">0</b></button>
+        </div>
+      </div>
+
+      <div id="editor-wrap">
+        <div id="editor" class="editor">
+          <div class="gutter" id="gutter"></div>
+          <div class="code-view">
+            <pre class="highlight" id="highlight" aria-hidden="true"></pre>
+            <textarea id="code" spellcheck="false" autocapitalize="off"
+                      autocomplete="off" wrap="off"></textarea>
+          </div>
+        </div>
+        <div class="empty-state" id="editor-empty">
+          <div class="es-art">S</div>
+          <h3>还没有打开的文件</h3>
+          <p>左边选一个文件，或者点「新建」起一个项目。</p>
+        </div>
+      </div>
+
+      <div id="issues" class="issues">
+        <div class="issues-head">
+          <span id="issues-title">问题</span>
+          <span class="spacer"></span>
+          <span class="issues-hint">点一行跳过去</span>
+        </div>
+        <div class="issues-body" id="issues-body"></div>
+      </div>
+
+      <div class="editor-foot">
+        <span id="pos-info">行 1，列 1</span>
+        <span class="sep">·</span>
+        <span id="file-lang">纯文本</span>
+        <span class="sep">·</span>
+        <span id="indent-info">空格 4</span>
+        <span class="spacer"></span>
+        <span id="save-info">自动保存开</span>
+      </div>
+    </section>
+
+    <div class="vsplit" id="vsplit-b"></div>
+
+    <!-- ---------- 右侧：预览 ---------- -->
+    <section id="preview-pane" class="collapsed">
+      <div class="preview-head">
+        <span class="pv-title">预览</span>
+        <span class="pv-meta" id="preview-meta">未运行</span>
+        <span class="spacer"></span>
+        <select id="preview-size" class="mini-select" title="预览尺寸">
+          <option value="fit">适应窗口</option>
+          <option value="1">100%</option>
+          <option value="0.75">75%</option>
+          <option value="0.5">50%</option>
+        </select>
+        <button class="mini" id="btn-preview-close" title="收起预览">×</button>
+      </div>
+      <div class="preview-body" id="preview-body">
+        <div class="preview-frame-wrap" id="preview-frame-wrap">
+          <iframe id="preview" title="游戏预览" allow="autoplay; fullscreen"></iframe>
+        </div>
+        <div class="preview-empty" id="preview-empty">
+          <div class="pe-icon">
+            <svg viewBox="0 0 48 48"><path d="M16 12v24l18-12z"/></svg>
+          </div>
+          <h3>点「运行」开始预览</h3>
+          <p>剧本会被真正解析一遍，跑的是同一套 WebAssembly 引擎。</p>
+        </div>
+      </div>
+      <div class="preview-foot">
+        <span id="preview-status">等待运行</span>
+        <span class="spacer"></span>
+        <span id="preview-events">0 条事件</span>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============================ 状态栏 ============================ -->
+  <footer id="statusbar">
+    <span class="sb-item" id="sb-engine">引擎：未启动</span>
+    <span class="sb-item" id="sb-script">剧本：—</span>
+    <span class="sb-item" id="sb-assets">素材：—</span>
+    <span class="spacer"></span>
+    <span class="sb-item ok" id="sb-check">未检查</span>
+    <span class="sb-item muted">STMG Maker 1.0</span>
+  </footer>
+</div>
+
+<!-- ============================ 模态框 ============================ -->
+<div class="modal-mask" id="modal-mask">
+  <div class="modal" id="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">标题</h3>
+      <button class="mini" id="modal-x">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+
+<!-- 拖放遮罩 -->
+<div class="drop-veil" id="drop-veil">
+  <div class="dv-box">
+    <strong>松手就导入</strong>
+    <span>支持 .zip 项目包 / .stm 剧本 / 图片音频素材</span>
+  </div>
+</div>
+
+<input type="file" id="file-input" multiple hidden>
+
+<script src="js/engine-src.js"></script>
+<script src="js/pyodide-manifest.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/player.js"></script>
+<script src="js/exporter.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

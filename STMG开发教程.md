@@ -8,6 +8,10 @@
 > 剧本用 `.stm` 文本文件写，引擎负责解析、推进、渲染、存档、打包和发布成网页。
 > 引擎本体是纯 Python（标准库 + pygame），网页版跑在 WebAssembly 的 CPython 里，
 > 和桌面版共享同一套代码——这是整个项目最重要的设计决策，后面会反复提到。
+>
+> **贯穿示例**：本文所有剧情代码块都用一个叫 `test1` 的演示项目
+> （放在 `projects/test1/`，名字就叫 test1，简单直接）。
+> 每一段示例都是可以直接抄进 test1 跑通的真实语法，不是伪代码。
 
 ---
 
@@ -26,6 +30,36 @@ STMG/
 ├── start.py         入口：python start.py 项目目录
 ├── launcher.py      图形化启动器（CustomTkinter）
 └── README.md        用户文档（语法手册在这里）
+```
+
+**动手**：先建一个最小可跑的 test1，跑起来再读代码——
+
+```
+projects/test1/
+├── script.stm       剧本（必需）
+├── options.stm      项目选项（可选）
+├── bg/              背景图
+├── sprite/          立绘
+├── bgm/             音乐
+└── custom/gui.py    界面自定义（可选，第五节讲）
+```
+
+`script.stm` 三行就能跑：
+
+```stm
+<
+Size=1280x720
+title=test1
+>
+<
+Start:
+"这是 test1 的第一句台词。点一下屏幕推进。"
+"不需要素材、不需要配置，纯文本就能玩。"
+>
+```
+
+```bash
+python start.py projects/test1
 ```
 
 `stmg/` 包内部再拆一层，每个文件一条清晰的责任线：
@@ -54,6 +88,29 @@ STMG/
 可以在无头环境跑——`start.py --auto` 无头测试、网页版引擎、未来的移植版，全都靠这个性质。
 你往引擎里加新功能时，尽量把逻辑放进「无头侧」，渲染层只做「怎么画」，不做「画什么」的决策。
 
+**剧情示例**（test1 用上角色、背景、音乐三件套，后面几节都拿它开刀）：
+
+```stm
+<
+Size=1280x720
+title=test1
+Font="Microsoft YaHei"
+>
+<
+Start:
+S.character("小菲")
+S.cg("bg/room.png")
+S.play("bgm/daily.mp3")
+
+"放学后的教室，只剩我和小菲两个人。"
+小菲 "你再不走，我就把你的作业本藏起来了哦？"
+
+Choose:
+    "乖乖留下写作业"
+    "撒腿就跑"
+>
+```
+
 ---
 
 ## 二、一份剧本的一生：解析器（parser.py）
@@ -75,6 +132,32 @@ python 占位符，直接当正文；否则数一数 `名称=值` 行的占比�
 `Repeat N:` / `While 条件:` / `SET 名字:` 后面跟缩进更深的行，就是它们的子块。
 缩进突然变浅 = 子块结束。
 
+**剧情示例**（分支与循环，缩进就是语法本身）：
+
+```stm
+Start:
+SET 好感度 = 0
+
+"要陪小菲去图书馆吗？"
+
+Choose:
+    "去"
+    "不去"
+
+If "去":
+    SET 好感度 = 好感度 + 10
+    小菲 "太好了！那说好了，不许中途跑掉哦。"
+Else:
+    小菲 "哼，那我一个人去。"
+
+Repeat 3:
+    "（走廊的灯又闪了一下。）"
+"现在好感度是 " + 好感度 + "。"
+```
+
+> 注：台词里没有 `{变量}` 这种插值语法——带 `+` 号的台词会整句当算式求值
+> （`_say_text` 的规则），所以拼变量就是普通的 `+` 字符串拼接。
+
 **3. 正则表就是语法表。** 文件顶部的十几条 `_RE` 常量一一对应语法元素
 （`IF_RE`、`CHOOSE_RE`、`SET_RE`、`CALL_RE`……）。想加新语法，先在这里登记。
 比如第 3 期新增的 AVG 就加了两条：
@@ -95,6 +178,18 @@ python 占位符，直接当正文；否则数一数 `名称=值` 行的占比�
 搬进来，带循环检测和文件名前缀的报错。所以主流程里 `include` 的公共段落必须写在
 走不到的末尾（配一个 `S.end()`），否则会被执行两遍。
 
+**剧情示例**（include 拆章：多文件剧本的标准骨架）：
+
+```stm
+<-- 主文件 script.stm -->
+Start:
+"第一章开始。"
+include "chapter1.stm"
+"第二章开始。"
+include "chapter2.stm"
+S.end()          <-- 主流程到此为止，include 进来的公共段落不会被重复执行 -->
+```
+
 ---
 
 ## 三、运行时：事件流生成器（runtime.py）
@@ -106,6 +201,23 @@ runtime.py 的文件头注释里（say / choose / question / bg / sprite / bgm /
 `exec_block` 是主循环体：一个 `if/elif` 链按语句类型分发。
 `do_call` 处理所有 `S.xxx / STM.xxx / R.xxx` 引擎调用——想加新的 `S.函数`，
 就在 `obj == "S"` 分支里加一个 `elif method == "你的函数"`。
+
+**剧情示例**（第一节那段 test1 三件套剧本，用 `--auto` 无头跑，能直接看到事件流）：
+
+```bash
+python start.py --auto projects/test1/script.stm
+```
+
+```text
+{"t": "sprite", "tag": "小菲", "path": "sprite/小菲.png", ...}
+{"t": "bg", "path": "bg/room.png", "clear": true}
+{"t": "bgm", "path": "bgm/daily.mp3", "loop": true}
+{"t": "say", "who": "", "text": "放学后的教室，只剩我和小菲两个人。"}
+{"t": "say", "who": "小菲", "text": "你再不走，我就把你的作业本藏起来了哦？"}
+{"t": "choose", "options": ["乖乖留下写作业", "撒腿就跑"]}
+```
+
+渲染层拿到的就是这种纯 JSON 字典——这就是「同一份引擎跑桌面和网页」的物理基础。
 
 三个容易踩的坑：
 
@@ -137,11 +249,42 @@ Session 把事件流整理成玩家友好的形态：
 `_apply()` 是 scene 的唯一修改入口：`avg` 事件的 `draw` 就是往
 `scene["avg"]` 列表 append 一条形状，`clear` 就是清空列表。
 
+**剧情示例**（test1 推进到选项那一步时，`session.scene` 的真实长相）：
+
+```python
+{
+    "bg": "bg/room.png",
+    "picture": "",
+    "sprites": {"0": {"path": "sprite/小菲.png", "pos": "center"}},
+    "bgm": "bgm/daily.mp3",
+    "bgm_loop": True,
+    "avg": [],                      # AVG 图层：没画东西就是空列表
+}
+```
+
 **快照存档**：`snapshot()` 把 answers / say_count / scene / vars / chosen 全部序列化成
 纯 JSON（`ensure_ascii=False`）。scene 里能放的东西必须是 JSON 友好类型——
 这就是为什么 AVG 形状事件里塞的是「指令列表」而不是 Python 对象。
 `restore()` 双轨恢复：先重放对齐执行位置，再用快照覆盖画面与变量
 （快照比重放更权威）。老存档（format=1）走原路径，永远向后兼容。
+
+**剧情示例**（在 test1 选完「去」之后存档，存档文件里和状态有关的部分）：
+
+```json
+{
+  "format": 2,
+  "say_count": 4,
+  "vars": {"好感度": 10},
+  "chosen": ["去"],
+  "scene": {
+    "bg": "bg/room.png",
+    "sprites": {"0": {"path": "sprite/小菲.png", "pos": "center"}},
+    "avg": []
+  }
+}
+```
+
+读档时引擎先重放 4 句台词对齐位置，再用这份 scene 覆盖画面——双保险。
 
 ---
 
@@ -158,6 +301,20 @@ render.py 里的函数全是「纯绘制」：`draw_sprite / draw_placeholder / 
 状态在 session 里，绘制函数不保存任何剧情状态。
 
 **素材缺失不崩**：`load_image` 返回 None 时画占位块。开发期图没画好也能全流程试跑。
+
+**剧情示例**（补间演出：test1 的角色入场与转场）：
+
+```stm
+Start:
+S.cg("bg/room.png")
+S.character("小菲", pos="left", dur=0.6)        <-- 从中间滑到左边，不是闪现 -->
+S.character("路人甲", pos="right", dur=0.6)     <-- 两边同时入场 -->
+S.transition("fade", dur=0.5)                   <-- 全屏淡入淡出 -->
+"两个人在门口撞了个满怀。"
+S.transition("flash", dur=0.3)                  <-- 闪白切场景 -->
+S.cg("bg/street.png")
+"再睁眼，已经是放学后的街道了。"
+```
 
 ### 5.1 补间动画是怎么做的
 
@@ -181,6 +338,22 @@ render.py 里的函数全是「纯绘制」：`draw_sprite / draw_placeholder / 
 全在这套配置里。项目作者改 `custom/gui.py` 就能大幅换脸而不碰引擎一行代码；
 美化包作者则更进一步，连 CSS / JS（网页版）和主题素材都能换。
 
+**剧情示例**（test1 想要一套粉白配色对话框，一个文件搞定）：
+
+```python
+# projects/test1/custom/gui.py
+# 只写想改的键，其余全部沿用引擎默认值（三层覆盖里最上面那层）
+def setup(ui):
+    ui["box_color"] = (255, 244, 248)      # 淡粉色对话框底
+    ui["box_alpha"] = 235                  # 0~255，越小越透
+    ui["box_radius"] = 14                  # 圆角
+    ui["box_border_color"] = (255, 170, 200)
+    ui["name_bg"] = (255, 128, 170)        # 名字框底色（粉）
+    ui["name_color"] = (255, 255, 255)     # 名字文字色
+    ui["name_h"] = 0.08                    # 名字框高度（占屏高）
+    ui["text_color"] = (90, 60, 70)        # 正文颜色
+```
+
 调试技巧：`custom/gui.py` 写错了不会白屏——App 初始化时把它包在 try 里，
 失败就降级用默认配置，并在开发模式弹一条 toast 告诉你配置错在哪。
 
@@ -195,6 +368,16 @@ BGM、音效、语音各自独立音量、独立通道：`play_bgm` 会做淡入
 （语音自动挂载产出的事件带 `auto=True` 和角色 tag，重听功能靠它定位）。
 设置面板里三条音量分开滑，玩家关闭 BGM 不影响语音。
 
+**剧情示例**（test1 的三通道齐开）：
+
+```stm
+Start:
+S.play("bgm/after_school.mp3", loop=true)     <-- BGM 循环 -->
+S.sound("se/door_close.mp3")                  <-- 音效：不打断 BGM -->
+S.voice("voice/小菲/01.wav")                  <-- 语音：这句台词的配音 -->
+小菲 "今天的散步路线，就交给你决定啦。"
+```
+
 **语音自动挂载**是音画分离的好例子：剧本里一句配音都不用写，
 只要 `options.stm` 开 `AutoVoice`，引擎按命名约定
 `voice/<角色名>/<序号>.wav` 自动找配音、自动播。找不到就静默跳过，
@@ -208,6 +391,15 @@ BGM、音效、语音各自独立音量、独立通道：`play_bgm` 会做淡入
 （见第四节）。读档入口先看 format 字段分流，两条路径并存——
 这就是「向后兼容」在代码里的长相：不删老路径，新东西并行加。
 
+**剧情示例**（成就：第一次走到某个结局时弹卡）：
+
+```stm
+If "答应她":
+    STM.achieve("第一次约会")
+    "两个人约好了周末见。"
+    S.end()
+```
+
 成就系统值得一提：`STM.achieve("名称")` 触发，第一次解锁才产事件弹窗，
 立刻落盘。它跨剧本标题区分——同一项目里不同结局线各自记各自的。
 
@@ -218,6 +410,12 @@ modcheck.py 会校验结构完整性、拒绝引用外部 URL（网页版里美�
 否则发布器无法打包）。主题 CSS 注入在引擎样式之后，所以直接覆盖即可；
 主题 JS 挂在 `STMGTheme` 命名空间下，提供 say / choose / ending 等钩子，
 美化包可以监听这些钩子做樱花飘落之类的演出效果。
+
+**剧情示例**（test1 挂上美化包发布网页版）：
+
+```bash
+python tools/htmlpub.py projects/test1 --mod example_sakura
+```
 
 ### pack.py 与资源包
 
@@ -240,12 +438,32 @@ modcheck.py 会校验结构完整性、拒绝引用外部 URL（网页版里美�
 revision 自动留 .bak。发布版默认静默，开发模式失败弹 toast。
 网页版对应物是 web_bridge 里的 VirtualFS 内存镜像，语义逐条对齐。
 
+**剧情示例**（test1 在玩家目录里留一封「信」——完整可跑，九点八的 QA 里有更进阶的用法）：
+
+```stm
+Start:
+stm.os(create("letter.txt"))
+stm.os(revision("letter.txt"), ""to"看到这行字的人，游戏就当通关了喵。")
+stm.os(read("letter.txt"))
+"读出来的内容是：" + STM.OS
+```
+
 ### stdlib_api.py：白名单哲学
 
 `stmg.python("math")` 只能开白名单里的库；python 代码块跑在
 `SAFE_BUILTINS` 构建的受限环境里——没有 open、没有 eval、没有 import。
 `R.api` 是唯一的联网出口，发布版还能用 `allow_net` 一键关死。
 给引擎加「能力」时想清楚一件事：能力越多，白名单越要收得越紧。
+
+**剧情示例**（白名单库算点数值，print 的结果飘在右上角）：
+
+```stm
+stmg.python("math")
+<python:
+print("骰子掷出了 " + str(math.ceil(RAND * 6)) + " 点")
+>
+"骰子落定。"
+```
 
 ---
 
@@ -289,6 +507,36 @@ SET 三角形:
 写错的指令在**解析期**就被 check 报出来（`parser.py` 调 `avg.compile_ops` 编译并校验），
 不会拖到玩家玩到一半才炸。
 
+**剧情示例**（test1 的黑板演出：小菲上台画图讲课）：
+
+```stm
+Start:
+S.cg("bg/classroom.png")
+
+"数学课上，小菲被点名上台画图。"
+
+SET 星星:
+    go(100px)
+    right(144)
+    go(100px)
+    right(144)
+    go(100px)
+    right(144)
+    go(100px)
+    right(144)
+    go(100px)
+
+小菲 "那么……五角星是这样画的！"
+S.AVG-button(0, 80, "星星", color="#ffffff", width=4)
+
+S.AVG-button(-220, -60, "circle", color="#ffd54d", size=90)
+小菲 "旁边再画个太阳，完美。"
+
+"下课铃响。"
+S.AVG-clear()        <-- AVG 层是演出的一部分，切场景时记得手动擦 -->
+S.cg("bg/street.png")
+```
+
 ### 6.2 数据流（六文件协作图）
 
 ```
@@ -316,12 +564,31 @@ avg.py 不依赖 pygame，输出统一的几何格式：
 
 ```
 屏幕 x = 画面宽/2 + 局部 x
-屏幕 y = 画面高/2 - 局部 x ← 注意符号！屏幕的 y 轴向下
+屏幕 y = 画面高/2 - 局部 y ← 注意符号！屏幕的 y 轴向下
 ```
 
 `run_turtle()` 是海龟绘图解释器：维护 `(x, y, head, pen)` 四元状态，
 `go` 用三角函数算落点，`left/right` 增减朝向角，`up/down` 切换笔状态，
 换色换线宽会断开当前折线另起一段（否则一条 polyline 两种颜色没法画）。
+
+**剧情示例**（test1 的「紧张值进度条」：While 循环画一排格子）：
+
+```stm
+SET 进度格:
+    go(40px)
+    right(90)
+    go(40px)
+    right(90)
+    go(40px)
+    right(90)
+    go(40px)          <-- 四笔收口，画出一个 40x40 的方格 -->
+
+SET i = 0
+While i < 5:
+    S.AVG-button(x:-120 + i*56, y:-200, "进度格", color="#7fd6a8", width=4)
+    SET i = i + 1
+"紧张值拉满了……"
+```
 
 ### 6.4 两端渲染
 
@@ -388,6 +655,14 @@ S.AVG-button(x:0, y:0, "box")  ← CALL_RE（连字符）+ parse_args（冒号�
    `SAFE_BUILTINS`，AVG 的 `avg_def / avg_button / avg_clear` 三个分支也在
    `execStmt / doCall` 里对齐了。新加桌面白名单函数或新语句时，记得同步 JS 侧。
 
+**剧情示例**（test1 的网页版三连：发布 → 检查 → 上线）：
+
+```bash
+python tools/htmlpub.py projects/test1 --out dist/test1_web
+# 打开 dist/test1_web/index.html 确认能玩
+# 确认没问题后整个目录丢 GitHub Pages 即可
+```
+
 ---
 
 ## 八、工具链（tools/）
@@ -416,6 +691,22 @@ python tools/htmlpub.py demo --out <临时目录> --no-assets
 已知环境性失败：selftest 的「找到带错误的剧本」一项依赖 `projects/` 下的一个
 不在仓库里的目录，失败属正常。AVG 相关的补充测试在 `_devtest/avg_smoketest.py`
 （解析 + 无头推进 + 快照 + 几何比对，Python/JS 两版海龟输出已验证一致）。
+
+**剧情示例**（test1 写完先体检再开玩——doctor 的一段典型输出）：
+
+```bash
+python tools/doctor.py projects/test1
+```
+
+```text
+[体检] projects/test1
+  [警告] 第 12 行：变量「好感度」在赋值前被使用（If 条件里）
+  [提示] 选项「撒腿就跑」没有任何 If 判断引用它——是忘了写分支吗？
+  [素材] bg/room.png 缺失（会显示占位块，不影响运行）
+[体检完成] 1 警告 / 1 提示 / 1 缺素材
+```
+
+开发期天天跑这个，比玩到一半卡死再回头翻代码省事得多。
 
 ---
 
@@ -501,6 +792,183 @@ lang         该存档用的语言版本
 
 **多语言**：项目里放 `script.ja.stm`、`script.en.stm`，标题界面自动出现
 「语言」按钮；玩家的选择存在存档目录，存档里也记着语言版本。
+
+**剧情示例**（test1 的三套发布组合拳）：
+
+```bash
+# 1) 加密桌面版：剧本锁起来，双击 start.bat 就能玩
+python stmenc/start.py projects/test1 --out dist/test1_pc --key my-secret
+
+# 2) 网页完全离线版：内置 JS 解释器，不依赖 Pyodide
+python tools/htmlpub.py projects/test1 --engine js
+
+# 3) 单文件网页版：整局游戏就是一个 HTML
+python tools/htmlpub.py projects/test1 --inline
+```
+
+---
+
+## 九点八、效果实现手册（玩家问答）
+
+这一节收录「我玩到某个游戏看到某个效果，STMG 怎么做出来」的实际问题。
+每条都按「拆解 → 纯剧本能做的 → 需要配置的 → 需要动代码的」分层给答案——
+先想清楚效果由哪几层拼出来，再决定动哪一层，这是演出开发的通用思路。
+
+### Q：如何实现「集中线 + 点击提示圈 + 自定义对话框」这类演出效果？
+
+**A：把画面拆成四层分别做，STMG 每层都有现成的路。**
+
+以「背景出现放射状集中线、某个位置出现提示圈引导玩家点击、
+对话框换成彩色名牌样式」为例，逐层拆：
+
+**① 集中线（速度线）—— 两条路，选一条：**
+
+路线一，贴图法（最省事）：美术做一张透明底、中间镂空的放射线 PNG，
+用叠图盖上去。叠图支持 `dur` 淡入，情绪到位：
+
+```stm
+S.picture("fx/speedline.png", dur=0.3)     <-- 集中线淡入 -->
+"脚步声越来越近了……"
+S.picture("", dur=0.3)                     <-- 拿掉叠图：路径置空即清掉 -->
+```
+
+路线二，AVG 画法（纯代码、零素材）：海龟绘图从中心向外画放射线。
+思路是「转向 → 抬笔走到内圈 → 落笔画到外圈」，重复 12 次就是一个环
+（下面写 3 组示意，剩下的照抄改角度即可）：
+
+```stm
+SET 集中线:
+    right(90)          <-- 朝下，画第一条（6 点钟方向） -->
+    up()
+    goto(0, 0)
+    go(150px)
+    down()
+    go(280px)          <-- 从内圈 150 画到外圈 430 -->
+    left(30)           <-- 转 30 度，下一条 -->
+    up()
+    goto(0, 0)
+    go(150px)
+    down()
+    go(280px)
+    left(30)
+    up()
+    goto(0, 0)
+    go(150px)
+    down()
+    go(280px)
+    ...                <-- 一共 12 条，把 left(30) 循环写满一圈 -->
+
+S.AVG-button(0, 0, "集中线", color="#ffffff", width=3)
+"脚步声越来越近了……"
+S.AVG-clear()
+```
+
+**② 点击提示圈（引导玩家注意某个位置）——AVG 画圈 + 叠图写字。**
+
+AVG 只能画线画圆、画不了文字，所以圈用 AVG、文字用一张小贴图：
+
+```stm
+S.AVG-button(x:180, y:120, "circle", color="#ff4466", size=90, width=4)
+S.picture("fx/tap.png")          <-- 预先做一张带"点击"字样的透明小图 -->
+"……那边有什么东西。"
+```
+
+想强调「点这里」的感觉，把圈画大一点、台词放短一点；
+AVG 层在对话框底下、选项底下，绝不会挡交互，放心叠。
+
+**③ 彩色名牌对话框 —— 纯配置，一个 custom/gui.py 搞定**（完整配置见 5.2 的示例）：
+
+```python
+# projects/test1/custom/gui.py
+def setup(ui):
+    ui["name_bg"] = (255, 128, 170)     # 名牌底色
+    ui["name_color"] = (255, 255, 255)  # 名牌文字
+    ui["name_h"] = 0.08                 # 名牌高度
+    ui["box_color"] = (255, 244, 248)   # 框底色
+    ui["box_alpha"] = 235
+    ui["box_radius"] = 14
+```
+
+想再进一步换整块框的形状，放一张 `gui/textbox/box.png`（按 `box_w × box_h`
+的比例画），引擎检测到就优先用图，不再画程序面板。
+
+**④ 屏幕底部一排常驻功能按钮（快存/快读/自动/全屏……）—— 目前要动代码。**
+
+STMG 桌面版对白画面没有常驻按钮条，功能全走键盘：
+`F5` 快存、`F9` 快读、`Shift+F5 / Shift+F9` 开存读档面板、
+`A` 自动播放、`H` 历史记录、`F11` 全屏、`Esc` 菜单、按住 `Ctrl` 快进。
+这是刻意的极简设计（画面干净）。真要做常驻条，属于「给引擎加新能力」，
+按第九节流水线走：在 `gui.py` 的 `draw_scene()` 末尾画一排按钮、
+在鼠标事件分发里加点击判断、回调直接绑 `quick_save / quick_load / open_menu`
+这些现成方法——引擎内部这些功能全是现成的，只差一层皮。
+网页版则简单得多：美化包 `theme.js` 拿到装饰层后想塞什么 DOM 都行，
+不用碰引擎。
+
+### Q：如何实现「读取用户名」（DDLC 式「我早就知道你的名字」）的效果？
+
+**A：用 `stm.os(read(...))`（STMG 定制版 os 库），读到的内容会存进 `STM.OS`。**
+
+先看**能直接跑**的最小版本——读一个游戏自己准备好的文件，内容进 `STM.OS`，
+台词随便拼：
+
+```stm
+<
+Size=1280x720
+title=test1
+>
+<
+Start:
+S.character("小菲")
+
+stm.os(create("visit.txt"))
+stm.os(revision("visit.txt"), ""to"这位玩家来过。")
+
+stm.os(read("visit.txt"))
+小菲 "记录上写着——「" + STM.OS + "」。我可是每天都记得哦。"
+>
+```
+
+进阶版：配合 `Question:` 先问玩家名字、存进变量，本局内随时能叫出来；
+再用 stm.os 在玩家目录里留一条「访问记录」，下次启动读回来——
+「引擎记得你」的演出就成了：
+
+```stm
+Start:
+S.character("小菲")
+
+STM.Q = "该怎么称呼你？"
+Question:
+SET 名字 = STM.ANSWER
+"好的，" + 名字 + "。这个名字我记住了。"
+
+stm.os(create("visit.txt"))
+stm.os(revision("visit.txt"), ""to"这位玩家来过。")
+
+<-- ……任意剧情之后，甚至玩家下次重新打开游戏时 -->
+stm.os(read("visit.txt"))
+小菲 "好久不见。记录上写着——「" + STM.OS + "」哦。"
+```
+
+逐行拆解：
+
+- `STM.Q = "..."` 设置输入框提示，`Question:` 停下来等玩家输入，结果在 `STM.ANSWER`；
+- `SET 名字 = STM.ANSWER` 把输入存进变量，本局内任意台词都能 `+ 名字 +` 拼；
+- `stm.os(revision(...), ""to"内容")` 空旧串 = 整文件写入，改前自动留 .bak；
+- `stm.os(read("visit.txt"))` 把文件内容读进 `STM.OS`——这就是 os.read 的核心机制。
+
+几个必须知道的边界：
+
+1. **发布版完全静默**：读写都不弹任何提示，看起来就是普通游戏功能；
+   开发模式下失败会弹 toast（文件不存在、路径越界等），方便调试。
+2. **「把玩家输入的名字写进文件」目前做不到**：`revision` 的写入内容
+   只认写死的字符串（解析期就定死），不能拼变量——这是引擎的已知限制。
+   所以跨会话记住玩家名字的可靠姿势是**让玩家存档**（`SET` 的变量会进
+   存档快照 vars），文件演出只放固定彩蛋文字；想真正把输入持久化，
+   就按第九节流水线给 revision 加变量支持。
+3. **网页版落点不同**：桌面版真写玩家磁盘（项目目录内、remove 走回收站）；
+   网页版写在浏览器沙箱 VirtualFS（IndexedDB），玩家换浏览器/清缓存就没了。
+4. **别读玩家敏感文件**：围栏允许绝对路径是给「读游戏自己写的记录」用的，
+   演出素材自己生成自己读，既安全又穿不了帮。
 
 ---
 
@@ -660,4 +1128,4 @@ S.AVG-clear` AVG 绘图（第 3 期）。
 
 祝开发顺利。改完记得跑验收，然后让杂鱼……让作者亲自玩一遍喵。
 
-*（本教程对应引擎版本：第 3 期，含 AVG 绘图系统。全文约一万字。）*
+*（本教程对应引擎版本：第 3 期，含 AVG 绘图系统。全文约一万四千字。）*

@@ -877,6 +877,71 @@ python tools/get_pyodide.py           # 约 13MB，下到 stmg/pyodide/
 
 ---
 
+## 在线制作器（webmaker）
+
+`tools/htmlpub.py` 是把**已经写好的**剧本发布成网页。如果你连剧本都想在浏览器里写，
+用制作器：
+
+```bash
+python tools/build_maker.py          # 组装产物到 dist/maker/
+cd dist/maker
+python -m http.server 8000           # 或者双击「启动制作器.bat」
+```
+
+打开 `http://localhost:8000/`，得到的是一个三栏 IDE：
+
+```
+文件树 │ 编辑器（语法高亮 / 行号 / 错误红点） │ 实时预览
+       │ 问题面板（点一行跳过去）           │
+```
+
+- **写**：`.stm` 语法高亮、Tab / Shift+Tab 整块缩进、回车自动跟缩进、Ctrl+F 查找替换
+- **查**：改完 800ms 自动体检，错误行号标红，问题面板点一下跳过去；
+  顺手报「引用了但不存在的素材」和「有文件但没引用」
+- **看**：点「运行」（F5）旁边立刻跑起来 —— 预览用的是**同一份 `stmg/*.py`**
+  （Pyodide 里的真引擎），不是另写一套 JS 解释器
+- **导出**：桌面版 zip / 网页版 zip / 单个 HTML / 项目源包
+
+产物结构（就是「一个 index.html + 一个 wasm + 几个 js」）：
+
+```
+dist/maker/
+  index.html                制作器外壳
+  css/app.css
+  js/editor.js              编辑器
+  js/storage.js             IndexedDB + 手写 zip
+  js/engine.js              Pyodide 桥
+  js/player.js              播放器（预览与导出共用）
+  js/exporter.js            导出器
+  js/app.js                 主控
+  js/engine-src.js          ← 构建生成：全部 stmg/*.py
+  js/pyodide-manifest.js    ← 构建生成
+  pyodide/
+    pyodide.asm.wasm        ← 那一个 wasm
+    pyodide.js
+    pyodide.asm.js
+    python_stdlib.zip
+    pyodide-lock.json
+  serve.ps1 / 启动制作器.bat
+```
+
+重新构建（改了 `stmg/` 或 `webmaker/` 之后）：
+
+```bash
+python tools/build_maker.py
+```
+
+细节见 `webmaker/README.md`。三条最容易踩的：
+
+1. **不能双击 `index.html`**，`file://` 下浏览器不给加载 wasm，必须走 http。
+2. **`serve.ps1` 必须带 UTF-8 BOM**，否则 Windows 自带脚本宿主按 ANSI 解码，
+   中文注释一乱就把括号配错，报「缺少右 }」。
+3. **导出的 exe 是「内置 http 服务 + 开浏览器」**，由包里的 `打包EXE.bat`
+   调 PyInstaller 生成（需要本机有 Python）。浏览器里直接编译 exe 做不到，
+   引擎本身是 WebAssembly 里的 CPython，只能跑在浏览器里。
+
+---
+
 ## 转换成 Ren'Py
 
 想把 STMG 的剧本搬到 Ren'Py 上跑（或者给美术 / 配音用 Ren'Py 的工具链）：

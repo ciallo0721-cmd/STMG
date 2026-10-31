@@ -19,10 +19,13 @@ jobs:
         python: ["3.12"]
 
     # 无头环境：不给 dummy 驱动，pygame 初始化音频 / 视频会直接失败
+    # PYTHONIOENCODING 是必须的：windows-latest 的控制台编码是 cp1252，
+    # 工具里一 print 中文（"剧本：xxx"）就抛 UnicodeEncodeError，整步直接判红。
     env:
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
       PYGAME_HIDE_SUPPORT_PROMPT: "1"
+      PYTHONIOENCODING: utf-8
 
     steps:
       - uses: actions/checkout@v4

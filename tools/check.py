@@ -26,6 +26,15 @@
 import os
 import sys
 
+# 英文 Windows（比如 CI 的 windows-latest）控制台编码是 cp1252，
+# 一 print 中文（"剧本：xxx"）就抛 UnicodeEncodeError，把体检脚本自己先弄死。
+# 这里把输出切到 UTF-8；终端不认就用替换字符兜着，至少结论能正常打出来。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 if ROOT not in sys.path:

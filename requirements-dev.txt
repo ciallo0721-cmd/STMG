@@ -1,0 +1,4 @@
+# 开发 / 测试才需要的依赖。玩家端只装 requirements.txt 就够了。
+-r requirements.txt
+
+pytest>=8

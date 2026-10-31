@@ -104,6 +104,19 @@ Question:
 - **剧本一键体检** —— `tools/doctor.py` 出健康度报告（结构统计 / 孤儿标签 / 未用素材 / 可疑项）
 - **增量更新** —— `tools/patch.py` 只发改动过的资源，玩家不用重下整个包
 
+第 3 期补齐的一批（偏向「做游戏的人」用得上的东西）：
+
+- **演出镜头** —— `S.camera(shake=8)` 震屏、`S.camera(zoom=1.3)` 推近、`S.camera(pan="left")` 平移；对话界面不跟着抖
+- **转场扩充** —— 内置 `fade / dissolve / flash / slide_* / wipe / zoom / iris` 七类，还能用 `custom/transitions.py` 写自己的
+- **输入校验** —— `Question:` 前设 `STM.QTYPE = "int"` 只收整数，`QMIN` / `QMAX` / `QMAXLEN` 限范围与长度
+- **全局持久化** —— `S.persist("route_a", 1)` 跨存档、跨周目记住玩家走过的路线（存在 `persist.json`）
+- **章节目录** —— 剧本里的顶层标签会自动变成标题界面的「章节选择」，测试时不用每次从头点
+- **按键自定义** —— 游戏内「设置 → 按键设置」，改完存进 `settings.json`，老键位习惯不受影响
+- **调试覆盖层** —— 开发模式按 `F3`：当前标签、变量表、已选项、persist、镜头状态一眼全看到
+- **语音重听** —— `V` 键，或者点对话框右下角的「重听」小按钮
+- **美化包在线装** —— 启动器「美化包 → 在线美化包」，从索引里挑一个，下载 + 校验 + 落地一气呵成
+- **测试与 CI** —— `tests/` 下 36 条 pytest；GitHub Actions 双平台跑测试 + 剧本检查 + 无头跑通
+
 ---
 
 ## 快速开始
@@ -182,8 +195,12 @@ start.bat projects\我的游戏\script.stm
 | 快进 | 按住 `Ctrl` |
 | 存档 / 读档 | `F5` / `F9`（直接存 / 读上次用的那个槽） |
 | 存读档界面 | `Shift`+`F5` / `Shift`+`F9` |
+| 重听这句语音 | `V`，或点对话框右下角的「重听」 |
 | 全屏 | `F11` |
-| 菜单（音量、文字速度、存读档） | `Esc` |
+| 菜单（音量、文字速度、存读档、按键设置） | `Esc` |
+| 调试覆盖层（仅开发模式） | `F3` |
+
+> 除了 `Esc` / `F3` / `空格` / `回车` 这几个保底键，其余都能在「设置 → 按键设置」里改。
 
 > `demo/` 是故意不放素材的示例，跑来跑去都是占位块——那是正常的，不是 bug。
 
@@ -227,6 +244,15 @@ start.bat projects\我的游戏\script.stm
 | `S.AVG-button(0,0,"三角形")` | 画 `SET 三角形:` 定义的海龟绘图 |
 | `S.AVG-clear()` | 擦掉 AVG 画的所有东西 |
 | `SET 名字:` + 缩进的 go/left/... | 定义一幅海龟绘图（详见「AVG 绘图」一节） |
+| `S.transition("wipe", dur=0.4)` | 换场转场（fade/dissolve/flash/slide_*/wipe/zoom/iris） |
+| `S.camera(shake=8, dur=0.4)` | 震屏，幅度 8 像素，越震越弱 |
+| `S.camera(zoom=1.3, dur=0.5)` | 推近到 1.3 倍并保持（写 `1` 复位） |
+| `S.camera(pan="left", dur=0.5)` | 向左平移（left/right/up/down/center） |
+| `S.wait(1.5)` | 等 1.5 秒再往下（点击可以跳过） |
+| `S.persist("route_a", 1)` | 写一条跨周目记忆，立刻落盘 |
+| `STM.PERSIST["route_a"]` | 读跨周目记忆（没写过是 `None`） |
+| `SET STM.QTYPE = "int"` | 下一句 `Question:` 只收整数（`"num"` 收小数，不写是文本） |
+| `SET STM.QMIN = 1` / `QMAX = 99` / `QMAXLEN = 12` | 输入范围与长度上限 |
 
 ---
 
@@ -440,6 +466,66 @@ S.character("png/菲.png", pos="right", alpha=120, scale=1.2, rotate=3)
 `sprite` / `bg` / `picture` 都认 `dur=`（秒）。不写 `dur` 就是瞬切 —— 老剧本行为完全不变。
 快进和「跳过已读」生效时动画会直接落到终态，不拖慢快进。
 
+## 演出进阶：转场与镜头
+
+### 转场
+
+```stm
+S.transition("fade", dur=0.4)       <-- 不写就是 fade，等于老行为
+S.transition("flash", dur=0.2)
+S.transition("wipe", dur=0.5)
+```
+
+内置效果：
+
+| kind | 长什么样 |
+|---|---|
+| `fade` | 淡入淡出，中点亮起遮罩、画面换景（默认） |
+| `dissolve` | 上一帧叠在新帧上渐隐，像交叉溶解 |
+| `flash` | 白闪，用来掩盖瞬间换景 |
+| `slide_left` / `slide_right` / `slide_up` / `slide_down` | 新画面从一侧推入 |
+| `wipe` | 从左往右揭开 |
+| `zoom` | 旧画面放大淡出 |
+| `iris` | 黑场里开一个圆洞逐渐放大 |
+
+**写自己的转场**：项目里放 `custom/transitions.py`。
+
+```python
+import pygame
+
+def my_wipe(surface, prev, p, w, h):
+    """直接往 surface 上画。p 是 0~1 的进度。"""
+    mask = pygame.Surface((w, h))
+    mask.fill((20, 20, 30))
+    mask.set_alpha(int(255 * (1 - p)))
+    surface.blit(mask, (0, 0))
+
+TRANSITIONS = {"my_wipe": my_wipe}
+```
+
+然后 `S.transition("my_wipe", dur=0.5)`。函数抛异常会自动退回 `fade`，不会把游戏炸掉；
+文件写错 / 没有 `TRANSITIONS` 就当作没这个文件。**网页版跑不了 Python 自定义转场**，
+一律回落成 `fade`（这是语言限制，不是 bug）。
+
+### 镜头
+
+```stm
+S.camera(shake=8, dur=0.4)          <-- 震屏，8 像素幅度
+S.camera(zoom=1.3, dur=0.5)         <-- 推近到 1.3 倍，之后一直保持
+S.camera(pan="left", dur=0.5)       <-- 向左平移（left/right/up/down/center）
+S.camera(zoom=1)                    <-- 复位（读档 / 重开也会自动复位）
+```
+
+镜头只动**场景图层**（背景 / 叠图 / 立绘 / AVG 画布），对话框和按钮留在原地 ——
+震屏时界面跟着抖是最容易穿帮的地方。三个参数都支持表达式：`S.camera(shake=幅度*2)`。
+
+### 等待
+
+```stm
+S.wait(1.5)                          <-- 停 1.5 秒，玩家点击可以跳过
+S.wait(dur=0.8)
+```
+
 ## 语音自动挂载（AutoVoice）
 
 不想一句一条 `S.voice("...")`，就在 `options.stm` 里开开关：
@@ -469,6 +555,32 @@ voice/<角色名>/<全局台词序号，4位补零>.wav     <-- 再试这个
 - 第 2 期之前的老存档照样能读（没有快照信息，仍走重放逻辑）
 - 存读档界面可以「导出存档」成 `.stmgsav` 单文件，也能从文件「导入存档」
 - `F5` / `F9` = 快速存读（上次用的那个槽）；`Shift`+`F5` / `Shift`+`F9` = 开存读档界面
+
+## 全局持久化（STM.PERSIST）
+
+存档是「这一周目的进度」，`persist` 是「玩家这个人的记忆」—— 关游戏、读旧档、
+开新周目都还在。做二周目内容、全结局收集、看过某段就解锁彩蛋，都靠它。
+
+```stm
+<-- 写：立刻落盘，不需要等存档 -->
+S.persist("route_a", 1)
+S.persist("见过真结局", "true")
+
+<-- 读：两种写法都行 -->
+If STM.PERSIST["route_a"] == 1:
+    "你上次走过 A 线。"
+
+S.persist("route_a")            <-- 只读形式，结果放进 STM.PERSIST_VAL
+If STM.PERSIST_VAL:
+    "记得。"
+EndIf
+```
+
+- 存在 `<项目>/.stmg_save/persist.json`，结构是 `{剧本标题: {键: 值}}`，所以一个目录里
+  放多款游戏也不会互相串
+- 值必须是 JSON 能表示的（数字 / 字符串 / 布尔 / 列表 / 字典）
+- 读不到 / 写失败一律静默忽略 —— 持久化不是关键路径，不能因为磁盘只读就让剧情崩
+- 想清空玩家的记忆，删掉 `persist.json` 就行
 
 ---
 
@@ -673,7 +785,10 @@ STMG/
 │   ├── patch.py             增量更新：对比两版只输出改动过的资源
 │   ├── modcheck.py          美化包静态检查（三条硬性限制）
 │   ├── modpub.py            美化包发布：产出「XXX_美化包」（不含引擎本体）
+│   ├── modindex.py          生成美化包在线索引（index.json + sha256）
 │   └── get_pyodide.py       把 Pyodide 拉到本地，网页版就能离线跑真引擎
+├── tests/                   ★ pytest 单测（解析 / 运行时 / 渲染 / 美化包 / 界面冒烟）
+├── .github/workflows/ci.yml 云端守门：双平台跑测试 + 剧本检查 + 无头跑通
 ├── mod/                     ★ 美化包（外观主题）：none / example_sakura / 你自己的
 ├── demo/                    示例游戏（故意没有素材）
 └── projects/                你自己的项目放这里
@@ -1152,6 +1267,37 @@ python tools/modpub.py 我的主题                            # 打包成「我
 项目内嵌引擎时，启动器会把当前美化包的**绝对路径**传给游戏进程，所以全局主题
 对内嵌引擎的项目一样生效。
 
+### 在线美化包（索引 + 一键安装）
+
+启动器「美化包 → **在线美化包**」：填一个索引地址，列出所有包，点「安装」就下载 +
+校验 + 落到 `mod/`。装完**不会自动启用** —— 回列表里自己点「启用选中的」，心里有数。
+
+索引就是一个 JSON，放哪都行（GitHub Pages、对象存储、甚至本地路径）：
+
+```json
+{"mods": [
+  {"id": "sakura", "name": "樱花飘落", "version": "1.0.0", "author": "ciallo0721-cmd",
+   "desc": "粉白配色 + 落樱粒子", "url": "sakura_美化包.zip", "sha256": "…"}
+]}
+```
+
+- `url` 写相对路径就是「相对索引文件自身」，把 index.json 和 zip 丢同一个目录最省事
+- `sha256` 可选；写了就必须对上，对不上直接拒装
+- 索引地址三种给法，优先用前面的：环境变量 `STMG_MOD_INDEX`、`mod/online.json`
+  里的 `{"index": "…"}`、启动器弹窗里临时填。默认**留空** —— 不替你去连一个可能
+  不存在的仓库
+
+发布产物多、懒得手写 sha256 就用生成器：
+
+```bash
+python tools/modindex.py                       # 扫 dist/mods，产物写 dist/mods/index.json
+python tools/modindex.py dist/mods --base https://example.com/mods/
+```
+
+**装的时候在防什么**：解压前查每个成员的路径（`../`、`C:` 一律拒）、后缀
+（`.exe/.bat/.dll/.pyc` 一律拒）、解压后的总体积（超过 16MB 拒）；解压后跑一遍
+`modcheck` 的同款静态校验，只要有一条 error 就整个删掉。已存在的同名包不覆盖。
+
 ### ⛔ 三条硬性限制
 
 美化包是**主题**，不是**引擎补丁**。下面三条会**静态检查**，不合格的直接拒绝发布
@@ -1256,6 +1402,18 @@ STMG + 版本 + salt + nonce + 密文 + HMAC-SHA256 校验
 - STMG → Ren'Py 是单向尽力转换：`stm.os` / `R.api` / `STM.python` / 嵌套 label
   转不过去，会列在转换报告里等你手工处理
 - 对话历史（回顾）只保留最近若干条，读档会重置
+- **网页版的转场是「像」不是「一样」**：`fade/flash/slide/wipe/iris` 用 CSS 动画重做，
+  `dissolve` 退化成快速淡出；`custom/transitions.py` 是 Python 代码，网页版一律回落 `fade`
+- **章节选择只列顶层标签**，最多显示 12 个（超出的会提示还有几章），被 `Call` 引用的
+  子程序标签不算章节；只有标题界面有这个入口，游戏内菜单没放（菜单已经够长了）
+- **在线美化包没有官方索引仓库**：默认地址是空的，得自己把 `index.json` + zip 传到
+  静态托管上，再在 `mod/online.json` 里填地址。引擎不替你选源
+- **调试覆盖层只在开发模式生效**，发布版按 `F3` 没反应（这是故意的）
+- **`S.wait` 只等不挡**：玩家点一下就直接过去，做不了「必须看完的演出」；要强制看，
+  就用 `dur` 补间 + 不写后续推进
+- **网页版的 `STM.PERSIST` 只在当前页面内有效**：它落在 Pyodide 的内存文件系统里，
+  刷新页面就没了（存档是另一套，走 IndexedDB，能留住）。要做「跨周目记忆」的网页版
+  发行，得自己接一层浏览器存储
 
 ---
 
@@ -1282,13 +1440,30 @@ A：支持。`SET 好感度 = 0` 完全合法。
 
 欢迎提 Issue 和 PR。
 
-改引擎之前建议先跑一遍自检：
+改引擎之前建议先跑这两组：
 
 ```bash
-python tools/selftest.py
+python -m pytest tests -q          # 单测，秒级，改完先跑这个
+python tools/selftest.py           # 端到端自检（解析 → 推进 → 打包 → 界面）
 ```
 
-加新语法的话，顺手在 `demo/script.stm` 里补一个用例，自检就能覆盖到。
+`tests/` 分五块，哪块挂了基本就知道改坏了什么：
+
+| 文件 | 管什么 |
+|---|---|
+| `test_parser.py` | 语法树结构：If/Else、嵌套、include、Call/Return |
+| `test_runtime.py` | 条件求值、persist 持久化、提问校验、镜头 / 转场 / wait 事件 |
+| `test_render.py` | 每个内置转场都不崩、自定义转场能加载、坏的自定义会回落 |
+| `test_mod.py` | 美化包：索引、安装、sha256、zip 越界、可执行文件拦截 |
+| `test_gui_smoke.py` | 无头建窗口，把调试层 / 章节 / 按键设置 / 镜头 / 重听各画一帧 |
+
+加新语法的话，顺手在 `demo/script.stm` 里补一个用例，再在 `tests/test_runtime.py`
+加一条断言 —— 前者证明「能跑」，后者保证「以后别改坏」。
+
+推上去之后 GitHub Actions 会自动在 Ubuntu 和 Windows 上重跑一遍（`.github/workflows/ci.yml`）。
+`selftest.py` 在 CI 里是**参考项**（`continue-on-error`）：它有两项依赖本机环境
+（`projects/YandereContract2.0` 不在仓库里、Linux runner 不一定有 tkinter），
+红不红不代表代码坏了 —— 真正的硬门是 pytest + 语法检查 + 无头跑通。
 
 ---
 

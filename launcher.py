@@ -2779,7 +2779,7 @@ class ModDialog(BaseDialog):
     def __init__(self, app):
         """美化包管理器：搭列表/信息/按钮，reload 拉 modmod 数据，模态等窗口。"""
         self._deactivate_windows_window_header_manipulation = True
-        super().__init__(app, "美化包（mod/）", 700, 580)
+        super().__init__(app, "美化包（mod/）", 700, 620)
         self.app = app
         self.packs = []
         self.sel = None
@@ -2808,13 +2808,15 @@ class ModDialog(BaseDialog):
 
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(fill="x", padx=18, pady=(10, 16))
-        for cols in (["启用选中的", "新建美化包", "打开文件夹"],
-                     ["检查这个包", "发布为美化包", "关闭"]):
+        for cols in (["启用选中的", "在线美化包", "新建美化包"],
+                     ["打开文件夹", "检查这个包", "发布为美化包"],
+                     ["关闭"]):
             row = ctk.CTkFrame(bar, fg_color="transparent")
             row.pack(fill="x", pady=3)
             for text in cols:
                 cmd = {"启用选中的": self._use, "新建美化包": self._new,
                        "打开文件夹": self.app.open_mod_dir,
+                       "在线美化包": self._online,
                        "检查这个包": self._check, "发布为美化包": self._pub,
                        "关闭": self.destroy}[text]
                 hot = text in ("启用选中的", "发布为美化包")
@@ -2940,6 +2942,11 @@ class ModDialog(BaseDialog):
         self.sel = os.path.basename(path)
         self.reload()
 
+    def _online(self):
+        """打开在线美化包列表（索引地址可临时填），装完回来自动刷新列表。"""
+        OnlineModDialog(self.app)
+        self.reload()
+
     def _check(self):
         """用 tools/modcheck.py 检查选中包，结果弹 InfoDialog。"""
         p = self._current()
@@ -2960,6 +2967,147 @@ class ModDialog(BaseDialog):
                        % "\n".join(errs[:5]))
             return
         self.app.run_modpub(p[0]["id"])
+
+
+class OnlineModDialog(BaseDialog):
+    """在线美化包：拉索引 → 列表 → 一键装。
+
+    索引地址优先用 mod/online.json 或环境变量 STMG_MOD_INDEX，弹窗里也能临时填。
+    拉索引和下载都跑在后台线程（界面不会假死），结果用 after() 回主线程刷新。
+    装完不自动启用 —— 让用户自己回「美化包」列表里点，心里有数。
+    """
+
+    def __init__(self, app):
+        """构造在线包列表：地址栏 + 刷新 + 包列表 + 状态栏，模态等窗口关闭。"""
+        super().__init__(app, "在线美化包", 780, 620)
+        self.app = app
+        self.items = []
+
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(14, 0))
+        ctk.CTkLabel(head, text="在线美化包", font=app.f(15, True), text_color=INK,
+                     anchor="w").pack(anchor="w")
+        ctk.CTkLabel(head,
+                     text="索引是一个 JSON（{\"mods\": [...]}），每个包带 zip 直链和可选的 sha256。\n"
+                          "装之前会跑一遍 modcheck 的同款静态校验，不合格的包一律不落地。",
+                     font=app.f(11.5), text_color=SUB, anchor="w", justify="left"
+                     ).pack(anchor="w", pady=(2, 0))
+
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=18, pady=(10, 0))
+        self.ent = ctk.CTkEntry(bar, height=34, corner_radius=9, font=app.f(12),
+                                placeholder_text="索引地址（http(s) 或本地 json 路径）")
+        self.ent.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(bar, text="刷新", width=84, height=34, corner_radius=9,
+                      font=app.f(12.5), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self._load).pack(side="left", padx=(8, 0))
+
+        self.box = ctk.CTkScrollableFrame(self, fg_color=CARD, corner_radius=12)
+        self.box.pack(fill="both", expand=True, padx=18, pady=(10, 6))
+
+        self.status = ctk.CTkLabel(self, text="", font=app.f(11.5), text_color=SUB,
+                                   anchor="w", justify="left", wraplength=720)
+        self.status.pack(fill="x", padx=18)
+        ctk.CTkButton(self, text="关闭", height=36, corner_radius=9, font=app.f(12.5),
+                      fg_color="transparent", text_color=INK, border_width=1,
+                      border_color=BORDER, hover_color=HOVER,
+                      command=self.destroy).pack(fill="x", padx=18, pady=(8, 16))
+
+        self.ent.insert(0, modmod.default_index() or "")
+        self._load()
+        self.wait_window(self)
+
+    # ------------------------------------------------------------------ #
+    def _load(self):
+        """按地址栏内容重新拉索引（后台线程）。"""
+        url = self.ent.get().strip()
+        self._say("正在拉索引…")
+        for w in self.box.winfo_children():
+            w.destroy()
+        threading.Thread(target=self._load_worker, args=(url,), daemon=True).start()
+
+    def _load_worker(self, url):
+        entries, err = modmod.fetch_index(url or None)
+        try:
+            self.after(0, lambda: self._loaded(entries, err))
+        except tk.TclError:
+            pass
+
+    def _loaded(self, entries, err):
+        """索引回来了：有错就提示，没包就给空状态，正常就逐条画卡片。"""
+        if err:
+            self._say("拉索引失败：%s" % err)
+            return
+        self.items = entries
+        if not entries:
+            ctk.CTkLabel(self.box, text="索引里没有美化包。",
+                         font=self.app.f(12), text_color=SUB).pack(pady=20)
+            self._say("索引是空的。")
+            return
+        self._say("共 %d 个包，点「安装」直接下载。" % len(entries))
+        for it in entries:
+            card = ctk.CTkFrame(self.box, fg_color=BG, corner_radius=10)
+            card.pack(fill="x", pady=4, padx=2)
+            left = ctk.CTkFrame(card, fg_color="transparent")
+            left.pack(side="left", fill="both", expand=True, padx=(12, 6), pady=10)
+            ctk.CTkLabel(left, text="%s  v%s" % (it["name"], it["version"]),
+                         font=self.app.f(13, True), text_color=INK, anchor="w"
+                         ).pack(anchor="w")
+            ctk.CTkLabel(left, text="作者：%s　id：%s" % (it["author"], it["id"]),
+                         font=self.app.f(11), text_color=SUB, anchor="w"
+                         ).pack(anchor="w")
+            if it["desc"]:
+                ctk.CTkLabel(left, text=it["desc"], font=self.app.f(11.5),
+                             text_color=SUB, anchor="w", justify="left", wraplength=520
+                             ).pack(anchor="w", pady=(2, 0))
+            if any(m["id"] == it["id"] for m in modmod.list_mods()):
+                ctk.CTkLabel(card, text="已安装", font=self.app.f(11.5), text_color=SUB
+                             ).pack(side="right", padx=14)
+                continue
+            btn = ctk.CTkButton(card, text="安装", width=82, height=32, corner_radius=8,
+                                font=self.app.f(12.5), fg_color=ACCENT,
+                                hover_color=ACCENT_HOVER)
+            btn.configure(command=lambda i=it, b=btn: self._install(i, b))
+            btn.pack(side="right", padx=14)
+
+    def _install(self, item, btn):
+        """点安装：按钮转圈，后台下载 + 校验 + 落地。"""
+        btn.configure(state="disabled", text="安装中…")
+        self._say("正在下载「%s」…" % item["name"])
+        threading.Thread(target=self._install_worker, args=(item, btn),
+                         daemon=True).start()
+
+    def _install_worker(self, item, btn):
+        ok, msg, mid = modmod.install_from_url(item["url"], item["id"],
+                                               item.get("sha256") or "")
+        try:
+            self.after(0, lambda: self._installed(ok, msg, btn))
+        except tk.TclError:
+            pass
+
+    def _installed(self, ok, msg, btn):
+        """装完刷新状态；成功就把按钮换成「已安装」并提示去列表里启用。"""
+        self._say(("✓ " if ok else "✗ ") + msg)
+        if ok:
+            try:
+                btn.configure(state="disabled", text="已安装",
+                              fg_color="transparent", text_color=SUB,
+                              border_width=1, border_color=BORDER)
+            except tk.TclError:
+                pass
+            self.app.log_line("美化包已安装：%s" % msg)
+        else:
+            try:
+                btn.configure(state="normal", text="安装")
+            except tk.TclError:
+                pass
+
+    def _say(self, text):
+        """改底部的状态文案（顺手截断，免得长报错把窗口撑变形）。"""
+        try:
+            self.status.configure(text=str(text)[:400])
+        except tk.TclError:
+            pass
 
 
 class HtmlDialog(BaseDialog):

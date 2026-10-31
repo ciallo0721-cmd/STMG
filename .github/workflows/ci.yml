@@ -1,0 +1,61 @@
+name: CI
+
+# 云端守门：每次 push / PR 都开一台干净机器，把「改坏引擎自己不知道」的雷提前踩掉。
+# 本地跑的命令和这里一模一样，跑挂了先在自己机器上复现，别只看红叉。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # 一个平台挂了，另一个平台的结论也要拿到
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12"]
+
+    # 无头环境：不给 dummy 驱动，pygame 初始化音频 / 视频会直接失败
+    env:
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+      PYGAME_HIDE_SUPPORT_PROMPT: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: 语法编译（抓半成品 / 缩进错）
+        run: python -m compileall -q stmg tools stmenc launcher.py start.py
+
+      - name: 单元测试
+        run: python -m pytest tests -q
+
+      - name: 剧本语法检查
+        run: python tools/check.py demo --verbose
+
+      - name: 无头跑通演示剧本
+        run: python start.py --auto demo/script.stm
+
+      - name: 剧本体检（只提示，不挡门）
+        run: python tools/doctor.py demo
+        continue-on-error: true
+
+      # selftest 里有一项依赖 projects/YandereContract2.0（不在仓库里，projects/* 被忽略），
+      # 还有一项要 import 启动器（Linux runner 上不一定有 tkinter）。
+      # 所以这一项只做参考，不让它把整条流水线判红。
+      - name: 完整自检（参考项）
+        run: python tools/selftest.py
+        continue-on-error: true

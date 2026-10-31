@@ -23,7 +23,10 @@ SIDE_EFFECTS = ("bg", "picture", "sprite", "bgm", "se", "voice",
                 # 第 3 期 AVG 绘图：S.AVG-button 画一个形状 / S.AVG-clear 清屏。
                 # 只是往 AVG 图层上加东西，不用等玩家，所以也是副作用型——
                 # 不登记的话读档重放会卡在它上面，推进就断了。
-                "avg")
+                "avg",
+                # 第 3 期镜头演出：S.camera 只登记一段动画，不挡剧情推进。
+                # 不登记的话会变成「要等玩家点一下」的阻塞事件。
+                "camera")
 
 # 序列化时的占位哨兵：表示「这个值没法变成 JSON，整项跳过」。
 _SKIP = object()
@@ -87,13 +90,13 @@ class Session(object):
         self.reset()
 
     # ------------------------------------------------------------------ #
-    def reset(self, replay=None, target_say=0):
+    def reset(self, replay=None, target_say=0, start=0):
         self.runtime = Runtime(self.script, self.options, self.dev_mode)
         # 读档重放：这段路上已经看过的提示不用再演一遍，尤其 python 代码块
         # 那几秒等待——不静音的话会在重放中途停下来卡住，读档就废了。
         # 注意代码本身照跑，它算出来的变量后面还要用。
         self.runtime.quiet = bool(target_say)
-        self.gen = self.runtime.run(replay=replay)
+        self.gen = self.runtime.run(replay=replay, start=start)
         # sprites 是个字典：tag -> {"path":..., "pos": "left"/"center"/"right"}
         # 同时可以站好几张立绘，跟 Ren'Py 的 show 一个意思。
         self.scene = {"bg": "", "picture": "", "sprites": {},
@@ -113,6 +116,10 @@ class Session(object):
                 continue
             if blk["t"] == "wait" and self.say_count < target_say:
                 # 兜底：万一还有 wait 漏出来，重放时也别停在它上面
+                continue
+            if blk["t"] == "transition" and self.say_count < target_say:
+                # 转场是「界面要停一拍去演遮罩」的阻塞事件，重放时既不用演也不该停，
+                # 否则读档会卡在换场那一刻，后面的进度全错位。
                 continue
             break
         self.runtime.quiet = False
@@ -208,6 +215,9 @@ class Session(object):
                 self.scene["avg"].append(dict(ev))
         elif t in ("api_result", "os_result"):
             # 联网 / 文件操作的回放结果：只是把结果交回界面与存档，不改动画面
+            pass
+        elif t == "camera":
+            # 镜头演出：不改场景状态，只把这段动画交给界面去播（effects 里已记录）
             pass
         self.effects.append(ev)
 

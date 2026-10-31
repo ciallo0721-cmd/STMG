@@ -29,7 +29,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .ph{display:grid;place-items:center;text-align:center;padding:20px;white-space:pre-line;
   font-size:15px;color:rgba(255,255,255,.62);letter-spacing:.5px;
   text-shadow:0 1px 8px rgba(0,0,0,.5)}
+#cam{position:absolute;inset:0;transform-origin:center center;will-change:transform}
 #spr-layer{position:absolute;inset:0;pointer-events:none}
+/* 转场遮罩：盖在场景之上、UI 之下，默认透明且不吃点击 */
+#fx{position:absolute;inset:0;z-index:15;pointer-events:none;opacity:0;
+  background:#000;transform-origin:center center}
 /* AVG 绘图层（第 3 期）：一块透明画布叠在立绘上、对话框下，
    pointer-events:none 让点击穿透到底下的推进热区 */
 #l-avg{position:absolute;inset:0;pointer-events:none}
@@ -180,13 +184,19 @@ __STMG_THEME_CSS__
 <div id="app">
 <div id="stage">
 
-  <div class="layer ph" id="l-bg"></div>
-  <div class="layer" id="l-pic"></div>
-  <div id="spr-layer"></div>
-  <!-- AVG 绘图层（第 3 期）：S.AVG-button 画的形状画在这块画布上。
-       内部分辨率 = 剧本分辨率（__STMG_W__ x __STMG_H__），
-       随 stage 一起被 CSS transform 缩放，坐标系和桌面版完全一致。 -->
-  <canvas id="l-avg" width="__STMG_W__" height="__STMG_H__"></canvas>
+  <!-- #cam 只包「场景图层」：镜头演出（震屏 / 推近 / 平移）动的是它，
+       对话框和按钮留在外面，不然震屏时 UI 会跟着抖，很丑。 -->
+  <div id="cam">
+    <div class="layer ph" id="l-bg"></div>
+    <div class="layer" id="l-pic"></div>
+    <div id="spr-layer"></div>
+    <!-- AVG 绘图层（第 3 期）：S.AVG-button 画的形状画在这块画布上。
+         内部分辨率 = 剧本分辨率（__STMG_W__ x __STMG_H__），
+         随 stage 一起被 CSS transform 缩放，坐标系和桌面版完全一致。 -->
+    <canvas id="l-avg" width="__STMG_W__" height="__STMG_H__"></canvas>
+  </div>
+  <!-- 转场遮罩层：fade / flash / slide / wipe / iris 都在这块上跑动画 -->
+  <div id="fx"></div>
 
   <div id="dialogue">
     <div id="namebox"></div>
@@ -198,6 +208,7 @@ __STMG_THEME_CSS__
     <button id="c-auto">自动</button>
     <button id="c-skip">快进</button>
     <button id="c-hist">历史</button>
+    <button id="c-voice">重听</button>
     <button id="c-save">存档</button>
     <button id="c-load">读档</button>
     <button id="c-cfg">设置</button>
@@ -563,7 +574,17 @@ function* execStmt(s){
     case "question": {
       const p = s.prompt ? stripQuotes(s.prompt) : (STM.Q || "");
       if (p) STM.Q = p;
-      const ans = yield {t:"question", prompt:STM.Q || "请输入"};
+      /* 输入类型 / 校验（第 3 期）：对齐桌面版 runtime 的 qtype 处理 */
+      let qtype = String(STM.QTYPE || "text").toLowerCase();
+      if (qtype === "number" || qtype === "float" || qtype === "int32") qtype = "num";
+      if (qtype !== "int" && qtype !== "num") qtype = "text";
+      const ev = {t:"question", prompt:STM.Q || "请输入", qtype:qtype};
+      if (STM.QMIN != null) ev.qmin = Number(STM.QMIN);
+      if (STM.QMAX != null) ev.qmax = Number(STM.QMAX);
+      if (STM.QMAXLEN != null) ev.qmaxlen = parseInt(STM.QMAXLEN, 10);
+      let ans = yield ev;
+      if (qtype === "int" && /^-?\d+$/.test(String(ans).trim())) ans = parseInt(String(ans).trim(), 10);
+      else if (qtype === "num" && /^-?\d+(\.\d+)?$/.test(String(ans).trim())) ans = parseFloat(String(ans).trim());
       STM.ANSWER = ans; SCOPE.STM = STM;
       break;
     }
@@ -637,6 +658,23 @@ function* doCall(s){
     else if (m === "avg_clear"){
       // S.AVG-clear()：整层擦掉
       yield {t:"avg", action:"clear"};
+    }
+    else if (m === "transition"){
+      yield {t:"transition", kind:String(stripQuotes(a0) || "fade"), dur:dur};
+    }
+    else if (m === "camera"){
+      /* 镜头演出：字段和桌面版 runtime 的 camera 分支一模一样 */
+      const ev = {t:"camera", mode:"", dur:dur};
+      const num = (v, dft) => { try { const n = Number(evalExpr(String(v))); return isFinite(n) ? n : dft; } catch (e) { return dft; } };
+      if (kw.shake != null){ ev.mode = "shake"; ev.amp = Math.abs(num(kw.shake, 8)); }
+      else if (kw.zoom != null){ ev.mode = "zoom"; ev.zoom = Math.max(0.05, num(kw.zoom, 1)); }
+      else if (kw.pan != null){
+        ev.mode = "pan";
+        const dir = String(stripQuotes(kw.pan) || "right").toLowerCase();
+        ev.dx = dir === "left" ? -1 : dir === "right" ? 1 : 0;
+        ev.dy = dir === "up" ? -1 : dir === "down" ? 1 : 0;
+      }
+      yield ev;
     }
     else if (m === "end") throw new Jump(BODY.length);
     else yield {t:"toast", text:"S." + s.method + " 还没有对应实现"};
@@ -1263,6 +1301,7 @@ function applyAvg(ev){
 
 /* ---------- 音频 ---------- */
 const AUDIO = {bgm:null, se:null, voice:null};
+let VOICE_PATH = "";      // 最后一句语音，供「重听」按钮用
 function playAudio(kind, path, loop){
   if (!path){ if (AUDIO[kind]){ AUDIO[kind].pause(); AUDIO[kind] = null; } return; }
   const url = assetUrl(path);
@@ -1362,8 +1401,10 @@ function apply(ev){
     case "sprite": setSprite(ev.path, ev.tag, ev.pos); break;
     case "bgm": playAudio("bgm", ev.path, ev.loop); break;
     case "se": playAudio("se", ev.path); break;
-    case "voice": playAudio("voice", ev.path); break;
+    case "voice": playAudio("voice", ev.path); VOICE_PATH = ev.path; break;
     case "stop": stopAudio(ev.what); break;
+    case "transition": playTransition(ev.kind, ev.dur); break;
+    case "camera": applyCamera(ev); break;
     case "hide":
       if (ev.what === "sprite") clearSprites();
       else if (ev.what === "all"){ clearSprites(); setPic(""); }
@@ -1373,6 +1414,123 @@ function apply(ev){
     case "toast": toast(ev.text); break;
     default: break;
   }
+}
+
+/* ---------- 转场 / 镜头（第 3 期） ---------- */
+/* 桌面版那套 fade/dissolve/flash/slide/wipe/zoom/iris 在网页上换成 CSS 动画，
+   效果不是逐像素一致（比如 dissolve 网页版退化成快速淡出），但节奏和手感对齐。
+   自定义转场（custom/transitions.py）是 Python 代码，网页版拿不到，一律回落 fade。 */
+let fxTimer = 0;
+function playTransition(kind, dur){
+  const fx = $("fx");
+  const d = Math.max(0.08, +(dur || 0.4));
+  const ms = d * 1000;
+  clearTimeout(fxTimer);
+  fx.style.transition = "none";
+  fx.style.transform = "";
+  fx.style.background = "#000";
+  fx.style.opacity = "1";
+  fx.style.clipPath = "";
+  fx.style.filter = "";
+  const k = String(kind || "fade").toLowerCase();
+
+  if (k === "flash"){
+    fx.style.background = "#fff";
+    fx.style.opacity = "1";
+    requestAnimationFrame(() => {
+      fx.style.transition = "opacity " + (ms / 2) + "ms ease-out";
+      fx.style.opacity = "0";
+    });
+    fxTimer = setTimeout(() => { fx.style.opacity = "0"; }, ms);
+    return;
+  }
+  if (k === "iris"){
+    fx.style.transition = "clip-path " + ms + "ms ease-in-out";
+    fx.style.clipPath = "circle(150% at 50% 50%)";
+    requestAnimationFrame(() => { fx.style.clipPath = "circle(0% at 50% 50%)"; });
+    fxTimer = setTimeout(() => { fx.style.opacity = "0"; fx.style.clipPath = ""; }, ms);
+    return;
+  }
+  if (k === "wipe" || k.startsWith("slide")){
+    fx.style.transition = "transform " + ms + "ms ease-in-out";
+    if (k === "wipe"){ fx.style.transform = "translateX(-100%)"; requestAnimationFrame(() => { fx.style.transform = "translateX(100%)"; }); }
+    else if (k === "slide_right"){ fx.style.transform = "translateX(-100%)"; requestAnimationFrame(() => { fx.style.transform = "translateX(100%)"; }); }
+    else if (k === "slide_left"){ fx.style.transform = "translateX(100%)"; requestAnimationFrame(() => { fx.style.transform = "translateX(-100%)"; }); }
+    else if (k === "slide_up"){ fx.style.transform = "translateY(100%)"; requestAnimationFrame(() => { fx.style.transform = "translateY(-100%)"; }); }
+    else { fx.style.transform = "translateY(-100%)"; requestAnimationFrame(() => { fx.style.transform = "translateY(100%)"; }); }
+    fxTimer = setTimeout(() => { fx.style.transition = "none"; fx.style.opacity = "0"; fx.style.transform = ""; }, ms);
+    return;
+  }
+  // fade / dissolve / zoom / 未知名字：统一走淡入淡出（zoom 额外带一点缩放）
+  if (k === "zoom"){
+    fx.style.transition = "opacity " + (ms / 2) + "ms ease-in, transform " + ms + "ms ease-in-out";
+    fx.style.transform = "scale(1.35)";
+    requestAnimationFrame(() => { fx.style.opacity = "0"; fx.style.transform = "scale(1)"; });
+  } else {
+    fx.style.transition = "opacity " + (ms / 2) + "ms ease-in";
+    requestAnimationFrame(() => { fx.style.opacity = "0"; });
+  }
+  fxTimer = setTimeout(() => { fx.style.opacity = "0"; fx.style.transform = ""; }, ms);
+}
+
+const CAM = {zoom:1, x:0, y:0, from:null, to:null, t:0, dur:0,
+             shake:0, shakeT:0, shakeDur:0, raf:0, last:0};
+function camRender(){
+  const el = $("cam");
+  if (!el) return;
+  const sx = CAM.shake ? (Math.random() * 2 - 1) * CAM.shake : 0;
+  const sy = CAM.shake ? (Math.random() * 2 - 1) * CAM.shake : 0;
+  el.style.transform = "translate(" + (CAM.x + sx).toFixed(2) + "px,"
+    + (CAM.y + sy).toFixed(2) + "px) scale(" + CAM.zoom.toFixed(4) + ")";
+}
+function camTick(now){
+  const dt = CAM.last ? Math.min(0.05, (now - CAM.last) / 1000) : 1 / 60;
+  CAM.last = now;
+  let busy = false;
+  if (CAM.from){
+    CAM.t += dt;
+    const p = CAM.dur <= 0 ? 1 : Math.min(1, CAM.t / CAM.dur);
+    const e = 1 - (1 - p) * (1 - p);            // ease-out，和桌面版一致
+    for (const k of ["zoom", "x", "y"]) CAM[k] = CAM.from[k] + (CAM.to[k] - CAM.from[k]) * e;
+    if (p >= 1){ CAM.from = null; CAM.to = null; } else busy = true;
+  }
+  if (CAM.shake > 0){
+    CAM.shakeT += dt;
+    if (CAM.shakeT >= CAM.shakeDur) CAM.shake = 0;
+    else { CAM.shake = Math.max(0, CAM.shake * (1 - dt / Math.max(0.001, CAM.shakeDur))); busy = true; }
+  }
+  camRender();
+  if (busy) CAM.raf = requestAnimationFrame(camTick);
+  else { CAM.raf = 0; CAM.last = 0; }
+}
+function applyCamera(ev){
+  const dur = +(ev.dur || 0);
+  if (String(ev.mode || "") === "shake"){
+    CAM.shake = Math.abs(+(ev.amp || 8));
+    CAM.shakeT = 0;
+    CAM.shakeDur = Math.max(0.001, dur || 0.4);
+    if (!CAM.raf) CAM.raf = requestAnimationFrame(camTick);
+    return;
+  }
+  const from = {zoom: CAM.zoom, x: CAM.x, y: CAM.y};
+  const to = {zoom: CAM.zoom, x: CAM.x, y: CAM.y};
+  if (ev.mode === "zoom") to.zoom = Math.max(0.05, +(ev.zoom || 1));
+  else if (ev.mode === "pan"){
+    to.x = (+(ev.dx || 0)) * stage.clientWidth;
+    to.y = (+(ev.dy || 0)) * stage.clientHeight;
+  }
+  CAM.from = from; CAM.to = to; CAM.t = 0; CAM.dur = Math.max(0, dur);
+  if (CAM.dur <= 0){
+    CAM.zoom = to.zoom; CAM.x = to.x; CAM.y = to.y;
+    CAM.from = null; CAM.to = null; camRender(); return;
+  }
+  if (!CAM.raf) CAM.raf = requestAnimationFrame(camTick);
+}
+function resetCamera(){
+  CAM.zoom = 1; CAM.x = 0; CAM.y = 0; CAM.from = null; CAM.to = null;
+  CAM.shake = 0; CAM.shakeT = 0; CAM.shakeDur = 0;
+  if (CAM.raf){ cancelAnimationFrame(CAM.raf); CAM.raf = 0; CAM.last = 0; }
+  camRender();
 }
 
 /* ---------- 演出 ---------- */
@@ -1436,19 +1594,57 @@ function showChoose(ev){
   $("choose").classList.add("on");
   STMGTheme.choose(ev.options.slice());
 }
+let ASK = null;                         // 当前提问的 qtype / 上下限
+function askFilter(inp){
+  // 按 qtype 过滤输入（第 3 期）：int 只收整数、num 只收数字（一个小数点），
+  // 和桌面版 gui._append_input 的规则一致，避免两边手感不一样。
+  if (!ASK || ASK.qtype === "text" || ASK.qtype === undefined) return;
+  const intOnly = ASK.qtype === "int";
+  let out = "";
+  for (let i = 0; i < inp.value.length; i++){
+    const ch = inp.value[i];
+    if (/[0-9]/.test(ch)) out += ch;
+    else if (ch === "-" && out === "") out += ch;
+    else if (!intOnly && ch === "." && out.indexOf(".") < 0) out += ch;
+  }
+  if (out !== inp.value) inp.value = out;
+}
+function askCheck(v){
+  // 返回空串表示通过，否则是提示文案
+  if (!v) return "请输入内容";
+  let num = null;
+  if (ASK && ASK.qtype === "int"){
+    if (!/^-?\d+$/.test(v)) return "请输入整数";
+    num = parseInt(v, 10);
+  } else if (ASK && ASK.qtype === "num"){
+    if (!/^-?\d+(\.\d+)?$/.test(v)) return "请输入数字";
+    num = parseFloat(v);
+  }
+  if (num !== null){
+    if (ASK.qmin !== undefined && ASK.qmin !== null && num < ASK.qmin) return "不能小于 " + ASK.qmin;
+    if (ASK.qmax !== undefined && ASK.qmax !== null && num > ASK.qmax) return "不能大于 " + ASK.qmax;
+  }
+  if (ASK && ASK.qmaxlen && v.length > ASK.qmaxlen) return "最多 " + ASK.qmaxlen + " 个字符";
+  return "";
+}
 function showAsk(ev){
   MODE = "ask";
+  ASK = ev;
   $("ask-prompt").innerHTML = runsHTML(mdRuns(ev.prompt), null);
   const inp = $("ask-input");
   inp.value = "";
+  inp.maxLength = ev.qmaxlen ? ev.qmaxlen : 40;
   $("ask").classList.add("on");
   setTimeout(() => inp.focus(), 60);
 }
 function submitAsk(){
-  const v = $("ask-input").value.trim();
-  if (!v) return;
+  const inp = $("ask-input");
+  const v = inp.value.trim();
+  const bad = askCheck(v);
+  if (bad){ toast(bad); inp.focus(); return; }
   $("ask").classList.remove("on");
   MODE = "play";
+  ASK = null;
   ANSWERS.push(["question", v]);
   pump(v);
 }
@@ -1472,6 +1668,12 @@ function clearStage(){
   if (elAvg) elAvg.getContext("2d").clearRect(0, 0, elAvg.width, elAvg.height);
   elBg.style.backgroundImage = ""; elBg.className = "layer ph";
   elPic.style.backgroundImage = ""; elPic.className = "layer";
+  // 镜头与转场也要复位，否则上一局的推近 / 黑幕会带到新游戏
+  resetCamera();
+  const fx = $("fx");
+  fx.style.transition = "none"; fx.style.opacity = "0";
+  fx.style.transform = ""; fx.style.clipPath = ""; fx.style.background = "#000";
+  VOICE_PATH = "";
   HISTORY = []; SAYN = 0;
   $("ending").classList.remove("on");
   $("title").classList.remove("on");
@@ -1580,6 +1782,11 @@ $("c-skip").onclick = (e) => {
   if (SKIP){ AUTO = false; $("c-auto").classList.remove("act"); advance(); } else clearTimeout(autoTimer);
 };
 $("c-hist").onclick = openHistory;
+// 重听最后一句语音（第 3 期）：直接重放缓存的路径，没语音就提示一句
+$("c-voice").onclick = () => {
+  if (!VOICE_PATH){ toast("这句没有语音"); return; }
+  playAudio("voice", VOICE_PATH);
+};
 $("c-save").onclick = () => { elsHide(); openSlots("save"); };
 $("c-load").onclick = () => { elsHide(); openSlots("load"); };
 $("c-cfg").onclick = () => { elsHide(); applyCfg(); $("config").classList.add("on"); };
@@ -1589,6 +1796,7 @@ $("t-continue").onclick = () => { const d = readSlot(0); if (d) loadSave(0); els
 $("t-load").onclick = () => { elsHide(); openSlots("load"); };
 $("t-cfg").onclick = () => { elsHide(); applyCfg(); $("config").classList.add("on"); };
 $("ask-ok").onclick = submitAsk;
+$("ask-input").addEventListener("input", (e) => askFilter(e.target));
 $("ask-input").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAsk(); });
 $("e-restart").onclick = () => { newGame(); };
 $("e-title").onclick = () => {

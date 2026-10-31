@@ -473,16 +473,59 @@ def draw_toasts(surface, fonts, toasts, w, start_y=12, size=16):
         y += box.get_height() + 6
 
 
-def draw_transition(surface, kind, progress, w, h, color=(16, 16, 22), prev=None):
+def load_custom_transitions(root):
+    """加载 <root>/custom/transitions.py 里的 TRANSITIONS 字典。
+
+    格式：
+        def my_wipe(surface, prev, p, w, h):
+            ...          # 直接在 surface 上画
+        TRANSITIONS = {"my_wipe": my_wipe}
+
+    文件不存在、写错、TRANSITIONS 不是字典，一律返回 {}（引擎照常用内置转场）。
+    """
+    path = os.path.join(root, "custom", "transitions.py")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        ns = {"__file__": path, "__name__": "stmg_custom_transitions",
+              "pygame": pygame}
+        with open(path, "r", encoding="utf-8-sig") as f:
+            exec(compile(f.read(), path, "exec"), ns)      # noqa: S102
+    except Exception:                                      # noqa: BLE001
+        return {}
+    table = ns.get("TRANSITIONS") or {}
+    if not isinstance(table, dict):
+        return {}
+    return {str(k): v for k, v in table.items() if callable(v)}
+
+
+def draw_transition(surface, kind, progress, w, h, color=(16, 16, 22),
+                    prev=None, custom=None):
     """转场遮罩：surface 已经画好「新的一帧」，prev 是「上一帧」的快照。
 
-    三种效果（kind）：
-        fade      淡入淡出：遮罩透明度 0->255->0，画面在中点（全遮罩的瞬间）换景
-        dissolve  交叉溶解：上一帧直接叠在新帧上，透明度 1->0 渐隐
-        flash     白闪：一层白光在中点最亮，用来掩盖瞬间的换景
+    内置效果（kind）：
+        fade        淡入淡出：遮罩透明度 0->255->0，中点亮起遮罩、画面换景
+        dissolve    交叉溶解：上一帧直接叠在新帧上，透明度 1->0 渐隐
+        flash       白闪：一层白光在中点最亮，用来掩盖瞬间的换景
+        slide_left / slide_right / slide_up / slide_down
+                    滑动：新画面从一侧推入，旧画面被推走
+        wipe        擦除：新画面从左往右揭开
+        zoom        推近：旧画面放大淡出，新画面在下面
+        iris        光圈：黑场里开一个圆洞逐渐放大
+    自定义：custom 是 {名字: func(surface, prev, p, w, h)}，
+            命中就交给它画（出错自动退回 fade，不会崩）。
     prev 为 None 时退化为纯遮罩动画，不跨帧融合。
     """
     p = max(0.0, min(1.0, progress))
+    if not isinstance(color, (tuple, list)) or len(color) < 3:
+        color = (16, 16, 22)       # 传坏了也别让转场把整局游戏炸掉
+
+    if custom and kind in custom:
+        try:
+            custom[kind](surface, prev, p, w, h)
+            return
+        except Exception:                                  # noqa: BLE001
+            pass                       # 自定义转场坏了就退回内置 fade
 
     if kind == "dissolve":
         if prev is not None:
@@ -497,6 +540,63 @@ def draw_transition(surface, kind, progress, w, h, color=(16, 16, 22), prev=None
             mask = pygame.Surface((w, h), pygame.SRCALPHA)
             mask.fill((255, 255, 255, a))
             surface.blit(mask, (0, 0))
+        return
+
+    # ---- 滑动类：新帧从一侧推入，旧帧被推走 ----
+    if kind in ("slide_left", "slide_right", "slide_up", "slide_down"):
+        if prev is None:
+            # 没有上一帧就退化成 fade，别画出一半黑屏
+            kind = "fade"
+        else:
+            new = surface.copy()
+            surface.fill(color)
+            if kind == "slide_left":
+                nx, ny = int(w * (1.0 - p)), 0
+                px, py = nx - w, 0
+            elif kind == "slide_right":
+                nx, ny = -int(w * (1.0 - p)), 0
+                px, py = nx + w, 0
+            elif kind == "slide_up":
+                nx, ny = 0, int(h * (1.0 - p))
+                px, py = 0, ny - h
+            else:                       # slide_down
+                nx, ny = 0, -int(h * (1.0 - p))
+                px, py = 0, ny + h
+            surface.blit(prev, (px, py))
+            surface.blit(new, (nx, ny))
+            return
+
+    # ---- 擦除：旧帧铺底，新帧从左往右揭开 ----
+    if kind == "wipe":
+        if prev is None:
+            return
+        new = surface.copy()
+        surface.blit(prev, (0, 0))
+        cut = max(0, min(w, int(w * p)))
+        if cut > 0:
+            surface.blit(new.subsurface(pygame.Rect(0, 0, cut, h)), (0, 0))
+        pygame.draw.line(surface, (255, 255, 255), (cut, 0), (cut, h), 2)
+        return
+
+    # ---- 推近：旧帧放大淡出 ----
+    if kind == "zoom":
+        if prev is None:
+            return
+        k = 1.0 + 0.35 * p
+        sw, sh = max(1, int(w * k)), max(1, int(h * k))
+        layer = pygame.transform.smoothscale(prev, (sw, sh))
+        layer.set_alpha(int(255 * (1.0 - p)))
+        surface.blit(layer, ((w - sw) // 2, (h - sh) // 2))
+        return
+
+    # ---- 光圈：黑场里开一个圆洞 ----
+    if kind == "iris":
+        r = int(max(w, h) * 0.75 * p)
+        mask = pygame.Surface((w, h), pygame.SRCALPHA)
+        mask.fill((color[0], color[1], color[2], 255))
+        if r > 0:
+            pygame.draw.circle(mask, (0, 0, 0, 0), (w // 2, h // 2), r)
+        surface.blit(mask, (0, 0))
         return
 
     # fade（默认）：0->255->0，中点换景

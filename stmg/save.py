@@ -239,6 +239,59 @@ def save_lang(root, title, lang):
 
 
 # --------------------------------------------------------------------------- #
+# 全局持久化（STM.PERSIST，跨周目 / 跨存档，第 3 期）
+#
+# 和存档槽的区别：
+#   - 存档槽 = 某一局的快照，读档会覆盖当前状态；
+#   - persist = 玩家这台机器上的长期进度（走过的路线 / 通关标记 / 收集进度），
+#     不随读档回滚，也不进存档包。删掉 .stmg_save/persist.json 才会重置。
+# --------------------------------------------------------------------------- #
+PERSIST_FILE = "persist.json"
+
+
+def load_persist(root, title):
+    """读某个剧本的全局持久化数据，读不到返回空字典。
+
+    文件结构是 {标题: {键: 值}}，所以一个存档目录能容纳多款游戏。
+    只返回 dict；文件里是别的类型就当没有（不让坏数据把引擎带崩）。
+    """
+    p = os.path.join(save_dir(root), PERSIST_FILE)
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return {}
+    val = data.get(title, {}) if isinstance(data, dict) else {}
+    return dict(val) if isinstance(val, dict) else {}
+
+
+def save_persist(root, title, values):
+    """把某个剧本的全局持久化数据写回 persist.json（整体覆盖该标题那一份）。
+
+    写失败静默忽略——持久化不是关键路径，不能因为磁盘只读就让剧情崩掉。
+    """
+    d = save_dir(root)
+    p = os.path.join(d, PERSIST_FILE)
+    data = {}
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (ValueError, OSError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[title] = values if isinstance(values, dict) else {}
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # 存档导入 / 导出（#6）
 #
 # 单个存档包格式 .stmgsav：一个 zip，里面是

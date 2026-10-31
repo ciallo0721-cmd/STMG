@@ -756,3 +756,219 @@ def copy_mod(src, dst_root):
         raise OSError("目标里已经有「%s」了" % name)
     shutil.copytree(src, dst)
     return dst
+
+
+# --------------------------------------------------------------------------- #
+# 在线美化包（第 3 期）：索引 + 一键安装
+# --------------------------------------------------------------------------- #
+# 索引就是一个 JSON：{"mods": [ ... ]}，每项写清楚 id / 名字 / 作者 / 版本 /
+# 下载地址（可以写相对路径，相对于索引文件自身）/ sha256（可选）。
+# 地址可以是 http(s)，也可以是本地文件路径 —— 本地路径方便自己先测，不用架服务器。
+#
+# 默认地址留空：不替用户随便连一个可能不存在的仓库。三种给法，从低到高：
+#   1. 环境变量 STMG_MOD_INDEX
+#   2. mod/online.json 里写 {"index": "https://..."}
+#   3. 启动器弹窗里手动填一次（不落盘）
+MOD_INDEX_URL = os.environ.get("STMG_MOD_INDEX", "")
+ONLINE_CONF = "online.json"
+INDEX_TIMEOUT = 10
+LIMIT_DOWNLOAD = 32 * 1024 * 1024      # 下载包上限（解压后另有 LIMIT_TOTAL 管着）
+
+
+class ModIndexError(Exception):
+    """索引 / 下载 / 安装里能预期到的失败。文案是给用户直接看的，不用再包一层。"""
+
+
+def _http_get(url, timeout=INDEX_TIMEOUT):
+    """拉一个 http(s) 地址的原始字节。失败统一抛 ModIndexError（中文原因）。"""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "STMG/3 (mod installer)",
+        "Accept": "*/*",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(LIMIT_DOWNLOAD + 1)
+    except urllib.error.HTTPError as e:
+        raise ModIndexError("服务器返回 %s %s" % (e.code, e.reason))
+    except urllib.error.URLError as e:
+        raise ModIndexError("连不上：%s" % (e.reason,))
+    except OSError as e:
+        raise ModIndexError("下载失败：%s" % (e,))
+    if len(data) > LIMIT_DOWNLOAD:
+        raise ModIndexError("文件超过 %d MB，已拒绝" % (LIMIT_DOWNLOAD // 1024 // 1024))
+    return data
+
+
+def _read_any(loc):
+    """读索引 / 压缩包：http(s) 走网络，其余按本地路径读。"""
+    loc = str(loc or "").strip()
+    if not loc:
+        raise ModIndexError("没有填索引地址")
+    if loc.lower().startswith(("http://", "https://")):
+        return _http_get(loc)
+    if not os.path.isfile(loc):
+        raise ModIndexError("找不到文件：%s" % loc)
+    size = os.path.getsize(loc)
+    if size > LIMIT_DOWNLOAD:
+        raise ModIndexError("文件超过 %d MB，已拒绝" % (LIMIT_DOWNLOAD // 1024 // 1024))
+    with open(loc, "rb") as f:
+        return f.read()
+
+
+def default_index(root=None):
+    """按「环境变量 > mod/online.json」的顺序找默认索引地址，都没有就返回空串。"""
+    if MOD_INDEX_URL:
+        return MOD_INDEX_URL
+    for r in roots(root):
+        p = os.path.join(mod_dir_of(r), ONLINE_CONF)
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                url = str((d or {}).get("index") or "").strip()
+                if url:
+                    return url
+            except (OSError, ValueError):
+                continue
+    return ""
+
+
+def fetch_index(loc=None, root=None):
+    """拉索引并规整成列表。返回 (entries, 错误文案)，错误文案为空表示成功。
+
+    每条 entry 固定有这些键：id / name / version / author / desc / url / sha256。
+    地址写相对的会按索引文件自身的位置补全，所以索引和压缩包放同一个目录最省事。
+    """
+    import urllib.parse
+
+    loc = str(loc or default_index(root) or "").strip()
+    if not loc:
+        return [], "还没配置索引地址（环境变量 STMG_MOD_INDEX，或 mod/online.json）"
+    try:
+        raw = _read_any(loc)
+        data = json.loads(raw.decode("utf-8-sig"))
+    except ModIndexError as e:
+        return [], str(e)
+    except (ValueError, UnicodeDecodeError) as e:
+        return [], "索引不是合法的 JSON：%s" % (e,)
+
+    items = data.get("mods") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return [], "索引格式不对：顶层应该是 {\"mods\": [...]} 或直接一个数组"
+
+    is_url = loc.lower().startswith(("http://", "https://"))
+    base = loc if is_url else os.path.dirname(os.path.abspath(loc))
+    out, seen = [], set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        mid = str(it.get("id") or "").strip()
+        url = str(it.get("url") or "").strip()
+        if not mid or not url or mid in seen or mid == DEFAULT_ID:
+            continue
+        if is_url:
+            url = urllib.parse.urljoin(base, url)
+        elif not os.path.isabs(url):
+            url = os.path.join(base, url)
+        seen.add(mid)
+        out.append({
+            "id": mid,
+            "name": str(it.get("name") or mid),
+            "version": str(it.get("version") or "1.0.0"),
+            "author": str(it.get("author") or "匿名"),
+            "desc": str(it.get("desc") or ""),
+            "url": url,
+            "sha256": str(it.get("sha256") or "").strip().lower(),
+        })
+    return out, ""
+
+
+def _safe_members(zf):
+    """检查压缩包里的每个成员：不许越狱、不许塞可执行文件、总解压体积不超限。"""
+    total = 0
+    for info in zf.infolist():
+        name = info.filename.replace("\\", "/")
+        parts = [p for p in name.split("/") if p not in ("", ".")]
+        if name.startswith("/") or ".." in parts or re.match(r"^[A-Za-z]:", name):
+            raise ModIndexError("压缩包里有越界路径：%s" % name)
+        base = os.path.basename(name)
+        ext = os.path.splitext(base)[1].lower()
+        if ext in FORBIDDEN_EXT:
+            raise ModIndexError("压缩包里不许有 %s 文件（%s）" % (ext, name))
+        if base in FORBIDDEN_NAMES:
+            raise ModIndexError("压缩包里有不该出现的文件：%s" % name)
+        total += max(0, int(info.file_size or 0))
+        if total > LIMIT_TOTAL:
+            raise ModIndexError("解压后超过 %d MB，已拒绝" % (LIMIT_TOTAL // 1024 // 1024))
+    return total
+
+
+def install_from_url(url, mid="", sha256="", root=None):
+    """下载一个美化包 zip 并装进 `mod/`。返回 (ok, 文案, 装好的 id)。
+
+    宁可多拒一次，也不让来路不明的东西落地：解压前查成员名 / 后缀 / 体积，
+    解压后跑一遍 verify()，只要有一条 error 就整个删掉。
+    已经存在的同名包不会被覆盖（想换版本请先手动删掉）。
+    """
+    import hashlib
+    import tempfile
+    import zipfile
+
+    mid = str(mid or "").strip()
+    try:
+        blob = _read_any(url)
+        if sha256:
+            got = hashlib.sha256(blob).hexdigest()
+            if got != sha256:
+                return False, "校验不通过（sha256 对不上），可能下载被截断或文件被换过", ""
+
+        tmp = tempfile.mkdtemp(prefix="stmg-mod-")
+        try:
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(blob))
+            except zipfile.BadZipFile:
+                return False, "这不是一个 zip 压缩包", ""
+            with zf:
+                _safe_members(zf)
+                zf.extractall(tmp)
+
+            # 包根目录：优先用索引给的 id，其次找唯一一个带 mod.json 的目录
+            cand = os.path.join(tmp, mid) if mid else ""
+            if not (cand and os.path.isfile(os.path.join(cand, MANIFEST_NAME))):
+                if os.path.isfile(os.path.join(tmp, MANIFEST_NAME)):
+                    cand = tmp
+                else:
+                    subs = [d for d in os.listdir(tmp)
+                            if os.path.isdir(os.path.join(tmp, d))
+                            and os.path.isfile(os.path.join(tmp, d, MANIFEST_NAME))]
+                    if len(subs) != 1:
+                        return False, "压缩包里找不到唯一的美化包目录（要有 mod.json）", ""
+                    cand = os.path.join(tmp, subs[0])
+            if not mid:
+                mid = os.path.basename(cand)
+
+            man = manifest(cand) or {}
+            got_id = str(man.get("id") or "").strip()
+            if got_id and got_id != mid:
+                return False, "清单里的 id（%s）和索引里的（%s）对不上" % (got_id, mid), ""
+
+            issues = verify(cand)
+            hard = [msg for lvl, msg in issues if lvl == "error"]
+            if hard:
+                return False, "这个包没通过校验：" + "；".join(hard[:3]), ""
+
+            dest = os.path.join(mod_dir_of(root or roots()[0]), mid)
+            if os.path.isdir(dest):
+                return False, "已经装过「%s」了，想换版本请先删掉 mod/%s" % (mid, mid), ""
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(cand, dest)
+            return True, "装好了：%s（在美化包管理器里点「启用选中的」生效）" % mid, mid
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    except ModIndexError as e:
+        return False, str(e), ""
+    except OSError as e:
+        return False, "安装失败：%s" % (e,), ""

@@ -35,6 +35,7 @@
 
 import json
 import os
+import random
 
 import pygame
 
@@ -46,10 +47,37 @@ from .session import Session
 # 界面状态枚举（顺序即编号，不要插队改顺序，别处用数字比较）。
 # 含义见文件头的状态机表。WAIT 是 python 代码块逐行飘提示的间隔态。
 (TITLE, ADVANCE, CHOOSE, QUESTION, MENU, BACKLOG, SAVELOAD, ERROR, ENDING,
- GALLERY, WAIT) = range(11)
+ GALLERY, WAIT, KEYBIND, CHAPTER) = range(13)
 
 # 设置面板里「字体」可循环切换的候选（"" = 用剧本头部的 Font=）
 FONT_CHOICES = ["", "微软雅黑", "黑体", "宋体", "楷体"]
+
+# 默认键位（第 3 期）：值是 pygame 的键码，存进 settings.json 时也是整数。
+# 玩家在「设置 → 按键设置」里改；老 settings.json 没有 keymap 时用这一份。
+DEFAULT_KEYMAP = {
+    "advance": pygame.K_SPACE,
+    "history": pygame.K_h,
+    "auto": pygame.K_a,
+    "skip": pygame.K_LCTRL,
+    "quick_save": pygame.K_F5,
+    "quick_load": pygame.K_F9,
+    "fullscreen": pygame.K_F11,
+    "menu": pygame.K_ESCAPE,
+    "replay_voice": pygame.K_v,
+}
+
+# 按键设置面板里显示的顺序与中文名
+KEY_ACTIONS = [
+    ("advance", "推进 / 下一句"),
+    ("history", "历史记录"),
+    ("auto", "自动播放"),
+    ("skip", "快进（按住）"),
+    ("quick_save", "快速存档"),
+    ("quick_load", "快速读档"),
+    ("fullscreen", "全屏"),
+    ("menu", "菜单"),
+    ("replay_voice", "重听语音"),
+]
 
 # 界面尺寸、颜色、位置全在 uiconf.DEFAULTS 里，
 # 项目目录下的 custom/gui.py 可以覆盖任意一项——别在这里写死数值。
@@ -74,6 +102,8 @@ class Settings(object):
         self.typewriter = True      # False = 文字瞬间全出
         self.font_name = ""         # 界面字体；"" = 用剧本头部的 Font=
         self.quick_slot = 1         # 快速存读用的槽位（F5/F9）
+        # 键位映射：动作名 -> pygame 键码（第 3 期，可在设置面板里改）
+        self.keymap = dict(DEFAULT_KEYMAP)
         self.load()
 
     def load(self):
@@ -93,6 +123,15 @@ class Settings(object):
                 self.typewriter = bool(d.get("typewriter", self.typewriter))
                 self.font_name = d.get("font_name", self.font_name) or ""
                 self.quick_slot = int(d.get("quick_slot", self.quick_slot))
+                # 键位：只认识已知动作；坏值忽略，缺的动作保留默认
+                km = d.get("keymap")
+                if isinstance(km, dict):
+                    for act in DEFAULT_KEYMAP:
+                        try:
+                            if act in km:
+                                self.keymap[act] = int(km[act])
+                        except (TypeError, ValueError):
+                            pass
             except (ValueError, OSError):
                 pass
 
@@ -110,7 +149,8 @@ class Settings(object):
                            "box_alpha": self.box_alpha,
                            "typewriter": self.typewriter,
                            "font_name": self.font_name,
-                           "quick_slot": self.quick_slot}, f, indent=1)
+                           "quick_slot": self.quick_slot,
+                           "keymap": self.keymap}, f, indent=1)
         except OSError:
             pass
 
@@ -189,6 +229,29 @@ class App(object):
         self.type_se = self.ui.get("type_se", "") or ""
         self.type_se_volume = float(self.ui.get("type_se_volume", 0.5))
 
+        # ---- 第 3 期：询问输入的类型 / 校验 ----
+        self.qtype = "text"
+        self.qmin = None
+        self.qmax = None
+        self.qmaxlen = None
+        self.q_error = ""
+        self.replay_rect = None         # 对话框角上的「重听」按钮矩形
+
+        # ---- 第 3 期：创作者调试覆盖层（F3 开关，只在开发模式生效）----
+        self.debug = False
+        # ---- 第 3 期：自定义转场（custom/transitions.py）----
+        self.custom_transitions = render.load_custom_transitions(self.root)
+        # ---- 第 3 期：镜头演出状态 ----
+        # zoom / x / y 是当前值，*_to 是目标；from 不为 None 时按 dur 插值。
+        self.camera = {"zoom": 1.0, "x": 0.0, "y": 0.0,
+                       "from": None, "to": None, "t": 0.0, "dur": 0.0,
+                       "shake": 0.0, "shake_t": 0.0, "shake_dur": 0.0}
+        # ---- 第 3 期：章节选择（排除 Call 用到的子程序标签）----
+        self.chapters = self._collect_chapters()
+        # ---- 第 3 期：按键设置 ----
+        self.kb_waiting = None          # 正在等待玩家按下的动作名
+        self.kb_message = ""
+
         # 项目自定义界面出问题的话，开发模式下提示一句（不影响游戏）
         if self.ui_error and self.dev_mode:
             self.pending_toasts.append("界面配置：" + self.ui_error)
@@ -238,6 +301,55 @@ class App(object):
         否则高亮/点击命中在放大缩小后会偏。
         """
         return (int(pos[0] / self.scale), int(pos[1] / self.scale))
+
+    # ------------------------------------------------------------------ #
+    # 第 3 期：键位 / 章节 / 调试小工具
+    # ------------------------------------------------------------------ #
+    def _key(self, action):
+        """取某个动作当前绑定的 pygame 键码（缺项回退默认值）。"""
+        val = self.settings.keymap.get(action)
+        if val is None:
+            val = DEFAULT_KEYMAP.get(action, 0)
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return DEFAULT_KEYMAP.get(action, 0)
+
+    @staticmethod
+    def _key_name(code):
+        """键码 -> 人能读的名字（Space / Left Ctrl / F5 …），查不到就显示数字。"""
+        try:
+            name = pygame.key.name(int(code))
+        except (TypeError, ValueError):
+            name = ""
+        if not name:
+            return "未知"
+        return " ".join(w.capitalize() for w in name.split())
+
+    def _collect_chapters(self):
+        """从剧本里收集可跳转的章节标签。
+
+        规则：顶层 label，去掉 start，再去掉被 Call 引用的子程序标签
+        （那些是公共段落，不是给人「从这章开始」的）。
+        """
+        try:
+            called = set()
+            for s in self.script.walk():
+                if s.get("k") == "call_sub" and s.get("name"):
+                    called.add(s["name"])
+            out = []
+            for i, s in enumerate(self.script.body):
+                if s.get("k") != "label":
+                    continue
+                name = s.get("name") or ""
+                if not name or name.lower() == "start":
+                    continue
+                if name in called:
+                    continue
+                out.append((name, i))
+            return out
+        except Exception:                              # noqa: BLE001
+            return []
 
     def draw_buttons(self, size):
         """统一画按钮。鼠标位置得换算回 base 坐标，不然放大/缩小时高亮会偏。"""
@@ -302,6 +414,9 @@ class App(object):
                 self._setup_anim("bg", "_bg", ev["dur"])
             elif ev["t"] == "picture" and ev.get("dur"):
                 self._setup_anim("picture", "_pic", ev["dur"])
+            # ---- 第 3 期：镜头演出 ----
+            elif ev["t"] == "camera":
+                self._apply_camera(ev)
         if self.session.toasts:
             self.pending_toasts.extend(self.session.toasts)
 
@@ -343,6 +458,57 @@ class App(object):
             return 1.0
         return min(1.0, a["t"] / a["dur"])
 
+    def _reset_camera(self):
+        """把镜头复位（新游戏 / 读档时调，避免上一局的缩放带到下一局）。"""
+        self.camera.update({"zoom": 1.0, "x": 0.0, "y": 0.0,
+                            "from": None, "to": None, "t": 0.0, "dur": 0.0,
+                            "shake": 0.0, "shake_t": 0.0, "shake_dur": 0.0})
+
+    def _apply_camera(self, ev):
+        """登记一段镜头动画（震屏 / 推近 / 平移）。
+
+        shake 是瞬发的衰减抖动；zoom / pan 是从当前值插值到目标值，结束后保持。
+        """
+        cam = self.camera
+        mode = ev.get("mode")
+        dur = float(ev.get("dur") or 0.0)
+        if mode == "shake":
+            cam["shake"] = abs(float(ev.get("amp") or 8.0))
+            cam["shake_t"] = 0.0
+            cam["shake_dur"] = max(0.001, dur or 0.4)
+            return
+        from_state = {"zoom": cam["zoom"], "x": cam["x"], "y": cam["y"]}
+        to_state = dict(from_state)
+        if mode == "zoom":
+            to_state["zoom"] = max(0.05, float(ev.get("zoom") or 1.0))
+        elif mode == "pan":
+            to_state["x"] = float(ev.get("dx") or 0.0) * self.W
+            to_state["y"] = float(ev.get("dy") or 0.0) * self.H
+        cam["from"] = from_state
+        cam["to"] = to_state
+        cam["t"] = 0.0
+        cam["dur"] = max(0.0, dur)
+
+    def _update_camera(self, dt):
+        """每帧推进镜头插值与震屏衰减。"""
+        cam = self.camera
+        if cam["from"] is not None and cam["to"] is not None:
+            cam["t"] += dt
+            p = 1.0 if cam["dur"] <= 0 else min(1.0, cam["t"] / cam["dur"])
+            e = 1.0 - (1.0 - p) * (1.0 - p)          # ease-out，收尾更自然
+            for k in ("zoom", "x", "y"):
+                cam[k] = cam["from"][k] + (cam["to"][k] - cam["from"][k]) * e
+            if p >= 1.0:
+                cam["from"] = None
+                cam["to"] = None
+        if cam["shake"] > 0:
+            cam["shake_t"] += dt
+            if cam["shake_t"] >= cam["shake_dur"]:
+                cam["shake"] = 0.0
+            else:
+                cam["shake"] = max(0.0, cam["shake"] -
+                                   cam["shake"] * (dt / max(0.001, cam["shake_dur"])))
+
     def _sprite_cx(self, item):
         """立绘水平中心 x（像素）；补间时用插值后的 _xfrac，否则按 pos 映射。"""
         xfr = item.get("_xfrac")
@@ -356,6 +522,7 @@ class App(object):
     def run(self):
         """主循环：每帧收输入、推进逻辑、绘制、翻屏，直到 running=False。"""
         clock = pygame.time.Clock()
+        self.clock = clock          # 调试覆盖层要读 fps，别在那儿 new 一个（永远 0）
         while self.running:
             dt = clock.tick(60) / 1000.0
             self.handle_events()
@@ -386,6 +553,9 @@ class App(object):
             if self.transition["t"] >= self.transition["dur"]:
                 self.transition = None
                 self._prev_frame = None
+
+        # 镜头演出（第 3 期）：插值 / 震屏衰减
+        self._update_camera(dt)
 
         # 补间动画：每帧推进，到时删掉（场景已是终态）；快进直接落终态
         if self.anim:
@@ -499,6 +669,57 @@ class App(object):
         self.apply_effects()
         self.sync_state()
 
+    def _append_input(self, text):
+        """按 qtype 过滤玩家输入（第 3 期）。
+
+        int 只收整数，num 只收数字（允许一个小数点），其余按纯文本；
+        超过 QMAXLEN 的部分直接丢弃。过滤是按字符做的，中文输入法也能用。
+        """
+        if self.q_error:
+            self.q_error = ""
+        limit = int(self.qmaxlen) if self.qmaxlen else 60
+        for ch in text:
+            if len(self.input_text) >= limit:
+                break
+            if self.qtype == "int":
+                if not (ch.isdigit() or (ch == "-" and not self.input_text)):
+                    continue
+            elif self.qtype == "num":
+                if ch.isdigit():
+                    pass
+                elif ch == "-" and not self.input_text:
+                    pass
+                elif ch == "." and "." not in self.input_text:
+                    pass
+                else:
+                    continue
+            self.input_text += ch
+
+    def _question_valid(self):
+        """校验当前输入，返回 (ok, 提示文案)。"""
+        v = self.input_text.strip()
+        if not v:
+            return False, "请输入内容"
+        num = None
+        if self.qtype == "int":
+            try:
+                num = int(v)
+            except ValueError:
+                return False, "请输入整数"
+        elif self.qtype == "num":
+            try:
+                num = float(v)
+            except ValueError:
+                return False, "请输入数字"
+        if num is not None:
+            if self.qmin is not None and num < self.qmin:
+                return False, "不能小于 %g" % self.qmin
+            if self.qmax is not None and num > self.qmax:
+                return False, "不能大于 %g" % self.qmax
+        if self.qmaxlen and len(v) > int(self.qmaxlen):
+            return False, "最多 %d 个字符" % int(self.qmaxlen)
+        return True, ""
+
     def sync_state(self):
         """根据当前 block 的类型，把 self.state 切到对应界面态。
 
@@ -530,6 +751,12 @@ class App(object):
         elif t == "question":
             self.state = QUESTION
             self.input_text = ""
+            # 第 3 期：读取输入类型 / 校验范围（老剧本没有这些字段 -> 纯文本）
+            self.qtype = blk.get("qtype") or "text"
+            self.qmin = blk.get("qmin")
+            self.qmax = blk.get("qmax")
+            self.qmaxlen = blk.get("qmaxlen")
+            self.q_error = ""
             pygame.key.start_text_input()
         elif t == "fatal":
             self.error_text = blk.get("message", "") + "\n" + blk.get("trace", "")
@@ -566,12 +793,11 @@ class App(object):
                 self._key_release(event)
 
             if self.state == QUESTION and event.type == pygame.TEXTINPUT:
-                if len(self.input_text) < 60:
-                    self.input_text += event.text
+                self._append_input(event.text)
                 continue
 
             if self.state in (TITLE, MENU, SAVELOAD, BACKLOG, ENDING, ERROR,
-                              GALLERY):
+                              GALLERY, KEYBIND, CHAPTER):
                 for b in self.buttons:
                     act = b.handle(event)
                     if act:
@@ -606,6 +832,11 @@ class App(object):
 
             if self.state == ADVANCE:
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    p = self._to_base(event.pos)
+                    # 第 3 期：对话框角上的「重听」按钮优先于「推进」
+                    if self.replay_rect and self.replay_rect.collidepoint(p):
+                        self.replay_voice()
+                        continue
                     if self.is_revealed():
                         self.advance()
                     else:
@@ -614,52 +845,98 @@ class App(object):
                     self.open_backlog()
 
     def on_key(self, event):
-        """键盘主分发：Esc 返回/开菜单、F11 全屏、Ctrl 快进、空格推进、F5/F9 存读档…
+        """键盘主分发：键位走 settings.keymap，玩家可在「按键设置」里改。
 
-        按当前 state 走不同分支；解析错误界面只允许回车/Esc 关窗。
+        默认仍然是 Esc 菜单 / F11 全屏 / Ctrl 快进 / 空格推进 / F5·F9 存读档，
+        所以老玩家的操作习惯完全不变；空格/回车永远保留为「推进」的兜底键。
         """
         k = event.key
+
+        # ---- 按键设置：正在等玩家按新键 ----
+        if self.state == KEYBIND:
+            if self.kb_waiting:
+                if k == pygame.K_ESCAPE:
+                    self.kb_waiting = None
+                    self.kb_message = "已取消"
+                elif k in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE,
+                           pygame.K_F3, pygame.K_KP_ENTER):
+                    # 这几个是保底键（关菜单 / 推进 / 调试），绑走会让玩家出不来
+                    self.kb_message = "这个键是保留键，换个别的"
+                    self.kb_waiting = None
+                else:
+                    act = self.kb_waiting
+                    owner = [a for a, kk in self.settings.keymap.items()
+                             if kk == k and a != act]
+                    if owner:
+                        self.kb_message = "这个键已经给「%s」用了" % dict(
+                            KEY_ACTIONS).get(owner[0], owner[0])
+                        self.kb_waiting = None
+                        return
+                    self.settings.keymap[act] = k
+                    self.settings.save()      # 立刻落盘，别等退出时才写
+                    self.kb_message = "已绑定：%s → %s" % (
+                        dict(KEY_ACTIONS).get(act, act), self._key_name(k))
+                    self.kb_waiting = None
+                return
+            if k == self._key("menu"):
+                self._back()
+            return
+
         # 解析错误界面：回车 / Esc 直接关窗口（没有可继续的游戏）
         if self.state == ERROR and self.error_mode == "script":
             if k in (pygame.K_RETURN, pygame.K_ESCAPE):
                 self.running = False
             return
-        if k == pygame.K_ESCAPE:
-            if self.state in (MENU, BACKLOG, SAVELOAD, GALLERY):
+
+        # 调试覆盖层：F3（只在开发模式生效，发布版按了也没反应）
+        if k == pygame.K_F3:
+            if self.dev_mode:
+                self.debug = not self.debug
+            return
+
+        if k == self._key("menu"):
+            if self.state in (MENU, BACKLOG, SAVELOAD, GALLERY, KEYBIND, CHAPTER):
                 self.state = self.overlay_from
                 self.about_only = False
                 self.buttons = []
             else:
                 self.open_menu()
             return
-        if k == pygame.K_F11:
+        if k == self._key("fullscreen"):
             self.toggle_fullscreen()
             return
         if self.state == QUESTION:
             if k == pygame.K_BACKSPACE:
                 self.input_text = self.input_text[:-1]
+                self.q_error = ""
             elif k in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                self.submit_answer(self.input_text)
+                ok, msg = self._question_valid()
+                if ok:
+                    self.submit_answer(self.input_text)
+                else:
+                    self.q_error = msg
             return
         if self.state == ADVANCE:
-            if k in (pygame.K_SPACE, pygame.K_RETURN):
+            if k == self._key("advance") or k in (pygame.K_SPACE, pygame.K_RETURN):
                 if self.is_revealed():
                     self.advance()
                 else:
                     self.reveal = 1e9
-            elif k == pygame.K_h:
+            elif k == self._key("history"):
                 self.open_backlog()
-            elif k == pygame.K_a:
+            elif k == self._key("auto"):
                 self.auto = not self.auto
-            elif k in (pygame.K_LCTRL, pygame.K_RCTRL):
+            elif k in (pygame.K_LCTRL, pygame.K_RCTRL) or k == self._key("skip"):
                 self.skip = True
-            elif k == pygame.K_F5:
+            elif k == self._key("replay_voice"):
+                self.replay_voice()
+            elif k == self._key("quick_save"):
                 # Shift+F5 开存读档界面；否则快速存到上次用的槽（没有就槽 1）
                 if event.mod & pygame.KMOD_SHIFT:
                     self.open_saveload(True)
                 else:
                     self.quick_save()
-            elif k == pygame.K_F9:
+            elif k == self._key("quick_load"):
                 if event.mod & pygame.KMOD_SHIFT:
                     self.open_saveload(False)
                 else:
@@ -709,6 +986,152 @@ class App(object):
         self.save_mode = saving
         self.buttons = []
 
+    # ------------------------------------------------------------------ #
+    # 第 3 期：按键设置
+    # ------------------------------------------------------------------ #
+    def open_keybind(self):
+        """打开按键设置面板（从菜单进入，Esc 返回）。"""
+        self.overlay_from = self.state
+        self.state = KEYBIND
+        self.kb_waiting = None
+        self.kb_message = ""
+        self.buttons = []
+
+    def draw_keybind(self):
+        """画按键设置：每条动作一行，点一下再按新键即可重绑。"""
+        self.buttons = []
+        dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 160))
+        self.base.blit(dim, (0, 0))
+        pw = min(int(self.W * 0.62), 560)
+        ph = min(int(self.H * 0.86), 620)
+        panel = pygame.Rect((self.W - pw) // 2, (self.H - ph) // 2, pw, ph)
+        pygame.draw.rect(self.base, (250, 250, 254), panel, border_radius=14)
+        t = self.fonts.get(23, bold=True).render("按键设置", True, (40, 40, 60))
+        self.base.blit(t, (panel.centerx - t.get_width() // 2, panel.y + 18))
+        hint = self.fonts.get(14).render(
+            "点一行，再按下新按键 · Esc 取消", True, (140, 140, 160))
+        self.base.blit(hint, (panel.centerx - hint.get_width() // 2, panel.y + 50))
+
+        y = panel.y + 84
+        row_h = 34
+        for act, label in KEY_ACTIONS:
+            keyname = self._key_name(self._key(act))
+            waiting = self.kb_waiting == act
+            text = "%s：%s" % (label, "请按下新按键…" if waiting else keyname)
+            r = pygame.Rect(panel.x + 40, y, panel.width - 80, row_h - 4)
+            self.buttons.append(render.Button(
+                r, text, (lambda a=act: self._start_bind(a))))
+            y += row_h
+
+        if self.kb_message:
+            msg = self.fonts.get(14).render(self.kb_message, True, (60, 110, 70))
+            self.base.blit(msg, (panel.centerx - msg.get_width() // 2,
+                                 panel.bottom - 78))
+        self.buttons.append(render.Button(
+            pygame.Rect(panel.centerx - 70, panel.bottom - 54, 140, 40),
+            "返回", self._back))
+        self.draw_buttons(17)
+
+    def _start_bind(self, action):
+        """进入「等下一下按键」状态。"""
+        self.kb_waiting = action
+        self.kb_message = ""
+
+    # ------------------------------------------------------------------ #
+    # 第 3 期：章节选择
+    # ------------------------------------------------------------------ #
+    def open_chapters(self):
+        """打开章节选择（从标题界面进入）。"""
+        self.overlay_from = self.state
+        self.state = CHAPTER
+        self.buttons = []
+
+    def draw_chapter(self):
+        """画章节列表：每个顶层 label 一个按钮，点了直接从那一节开始。"""
+        self.buttons = []
+        dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 170))
+        self.base.blit(dim, (0, 0))
+        pw = min(int(self.W * 0.66), 600)
+        ph = min(int(self.H * 0.86), 640)
+        panel = pygame.Rect((self.W - pw) // 2, (self.H - ph) // 2, pw, ph)
+        pygame.draw.rect(self.base, (250, 250, 254), panel, border_radius=14)
+        t = self.fonts.get(23, bold=True).render("章节选择", True, (40, 40, 60))
+        self.base.blit(t, (panel.centerx - t.get_width() // 2, panel.y + 18))
+        if not self.chapters:
+            tip = self.fonts.get(16).render(
+                "这个剧本还没有可跳转的章节标签。", True, (140, 140, 160))
+            self.base.blit(tip, (panel.centerx - tip.get_width() // 2,
+                                 panel.y + 90))
+        y = panel.y + 70
+        shown = self.chapters[:12]
+        for name, _idx in shown:
+            r = pygame.Rect(panel.x + 40, y, panel.width - 80, 40)
+            self.buttons.append(render.Button(
+                r, name, (lambda n=name: self.start_game(n))))
+            y += 46
+        if len(self.chapters) > len(shown):
+            more = self.fonts.get(14).render(
+                "（还有 %d 章未显示）" % (len(self.chapters) - len(shown)),
+                True, (150, 150, 170))
+            self.base.blit(more, (panel.x + 40, y))
+        self.buttons.append(render.Button(
+            pygame.Rect(panel.centerx - 70, panel.bottom - 56, 140, 40),
+            "返回", self._back))
+        self.draw_buttons(17)
+
+    # ------------------------------------------------------------------ #
+    # 第 3 期：调试覆盖层
+    # ------------------------------------------------------------------ #
+    def draw_debug(self):
+        """左上角半透明面板：当前标签 / 变量 / 已选项 / persist / 镜头。
+
+        纯展示，不写存档、不影响推进；只在开发模式 + F3 打开时出现。
+        """
+        rt = getattr(self.session, "runtime", None)
+        lines = []
+        if rt is not None:
+            lines.append("label: %s" % (getattr(rt, "cur_label", "") or "-"))
+        lines.append("say #%d   block: %s   state: %d" % (
+            self.session.say_count,
+            (self.session.block or {}).get("t", "-"),
+            self.state))
+        if rt is not None:
+            pairs = []
+            for k, v in sorted(rt.vars.items()):
+                if k in ("STM", "R") or not isinstance(k, str):
+                    continue
+                pairs.append("%s=%r" % (k, v))
+                if len(pairs) >= 12:
+                    break
+            if pairs:
+                lines.append("vars: " + "  ".join(pairs))
+            lines.append("chosen: %s" % ", ".join(sorted(map(str, rt.chosen))[:8]))
+            lines.append("ANSWER: %r" % getattr(rt.STM, "ANSWER", ""))
+            persist = getattr(rt, "persist", {}) or {}
+            lines.append("persist: %r" % (dict(list(persist.items())[:8])))
+        cam = self.camera
+        lines.append("camera: zoom=%.2f x=%.0f y=%.0f shake=%.1f" % (
+            cam.get("zoom", 1.0), cam.get("x", 0.0), cam.get("y", 0.0),
+            cam.get("shake", 0.0)))
+        clk = getattr(self, "clock", None)
+        lines.append("fps: %.0f" % (clk.get_fps() if clk else 0.0))
+
+        f = self.fonts.get(14)
+        pad = 10
+        widths = [f.size(s)[0] for s in lines] or [100]
+        w = min(self.W - 20, max(widths) + pad * 2)
+        h = len(lines) * 19 + pad * 2
+        box = pygame.Surface((w, h), pygame.SRCALPHA)
+        box.fill((10, 12, 18, 205))
+        self.base.blit(box, (10, 10))
+        pygame.draw.rect(self.base, (90, 200, 140), pygame.Rect(10, 10, w, h), 1)
+        y = 10 + pad
+        for s in lines:
+            self.base.blit(f.render(s[:120], True, (200, 235, 210)), (10 + pad, y))
+            y += 19
+
     def title_buttons(self):
         """构造标题界面的按钮列表（开始/读取/语言/画廊/设置/关于）。
 
@@ -717,8 +1140,10 @@ class App(object):
         out = []
         cx = self.W // 2
         y = int(self.H * 0.44)
-        labels = [("开始游戏", self.start_game, "start.png"),
-                  ("读取存档", lambda: self.open_saveload(False), "")]
+        labels = [("开始游戏", self.start_game, "start.png")]
+        if self.chapters:
+            labels.append(("章节选择", self.open_chapters, ""))
+        labels.append(("读取存档", lambda: self.open_saveload(False), ""))
         if len(self.lang_order) >= 2:
             labels.append(("语言: %s" % (self.current_lang or "默认"),
                            self.cycle_lang, ""))
@@ -732,8 +1157,8 @@ class App(object):
                                      render.load_image(pic, r.size) if pic else None))
         return out
 
-    def start_game(self):
-        """从标题进入游戏：停标题 BGM、重置 Session、清补间、放第一句台词。"""
+    def start_game(self, label=None):
+        """从标题进入游戏；给 label 时从该章节标签开始（章节选择用）。"""
         # 标题曲到此为止，音量还给玩家设置
         if self.ui.get("title_bgm"):
             self.audio.apply({"t": "stop", "what": "bgm"})
@@ -741,7 +1166,14 @@ class App(object):
                 self.audio.set_volume(k, v)
         self._prev_scene = None
         self.anim.clear()
-        self.session.reset()
+        self._reset_camera()
+        idx = 0
+        if label:
+            for name, i in self.chapters:
+                if name == label:
+                    idx = i
+                    break
+        self.session.reset(start=idx)
         self.apply_effects()
         self.reveal = 0.0
         self._shown_chars = 0
@@ -872,16 +1304,25 @@ class App(object):
                 self.draw_backlog()
             elif self.state == SAVELOAD:
                 self.draw_saveload()
+            elif self.state == KEYBIND:
+                self.draw_keybind()
+            elif self.state == CHAPTER:
+                self.draw_chapter()
 
-        # 转场遮罩：盖在场景之上做整屏渐变（fade / dissolve / flash）
+        # 转场遮罩：盖在场景之上做整屏渐变（内置 + 自定义）
         if self.transition and self.state not in (TITLE, ERROR, ENDING):
             dur = self.transition["dur"]
             p = (self.transition["t"] / dur) if dur > 0 else 1.0
             render.draw_transition(self.base, self.transition["kind"], p,
-                                   self.W, self.H, (16, 16, 22), self._prev_frame)
+                                   self.W, self.H, (16, 16, 22), self._prev_frame,
+                                   custom=self.custom_transitions)
 
         render.draw_toasts(self.base, self.fonts, self.pending_toasts[-4:], self.W,
                            size=self.ui["toast_size"])
+
+        # 第 3 期：调试覆盖层（F3），只在开发模式画，发布版完全不出现
+        if self.debug and self.dev_mode:
+            self.draw_debug()
         if self.scale != 1.0:
             pygame.transform.smoothscale(self.base, self.screen.get_size(), self.screen)
         else:
@@ -927,7 +1368,47 @@ class App(object):
         self.draw_buttons(22)
 
     def draw_scene(self):
-        """画游戏场景：背景 → 叠图 → 立绘（都带补间淡入）→ AVG 绘图层 → 对话框。"""
+        """画游戏场景：场景层先画到离屏画布，套上镜头变换，再叠对话框。
+
+        镜头（S.camera）只影响背景 / 叠图 / 立绘 / AVG，不影响对话框——
+        和商业 galgame 的做法一致，震屏时字不会跟着抖。
+        """
+        real = self.base
+        scene = pygame.Surface((self.W, self.H))
+        scene.fill((16, 16, 22))
+        self.base = scene
+        try:
+            self._draw_scene_layers()
+        finally:
+            self.base = real
+        self._blit_camera(scene)
+        self.draw_textbox()
+
+    def _blit_camera(self, scene):
+        """把离屏场景按当前镜头（缩放 / 平移 / 震屏）贴回 base 画布。"""
+        cam = self.camera
+        zoom = float(cam.get("zoom") or 1.0)
+        x = float(cam.get("x") or 0.0)
+        y = float(cam.get("y") or 0.0)
+        shake = float(cam.get("shake") or 0.0)
+        if shake > 0.01:
+            x += random.uniform(-shake, shake)
+            y += random.uniform(-shake, shake)
+        if abs(zoom - 1.0) < 0.001 and abs(x) < 0.5 and abs(y) < 0.5:
+            self.base.blit(scene, (0, 0))
+            return
+        self.base.fill((0, 0, 0))
+        if abs(zoom - 1.0) >= 0.001:
+            sw = max(1, int(self.W * zoom))
+            sh = max(1, int(self.H * zoom))
+            scaled = pygame.transform.smoothscale(scene, (sw, sh))
+            self.base.blit(scaled, ((self.W - sw) // 2 + int(x),
+                                    (self.H - sh) // 2 + int(y)))
+        else:
+            self.base.blit(scene, (int(x), int(y)))
+
+    def _draw_scene_layers(self):
+        """画场景层：背景 → 叠图 → 立绘（都带补间淡入）→ AVG 绘图层。"""
         self.base.fill((16, 16, 22))
         # 背景：带 dur 时做交叉淡入（老背景先停着，新背景渐渐显出来）
         bg_path = self.session.scene.get("bg", "")
@@ -1002,8 +1483,6 @@ class App(object):
         # 对话框下面。层里什么都没有时这个调用直接空转，零开销。
         render.draw_avg(self.base, self.session.scene.get("avg") or [],
                         self.W, self.H)
-
-        self.draw_textbox()
 
     def _draw_crossfade(self, path, p, w, h, h_frac):
         """按透明度 p 把图片淡入到全屏（背景补间用，p<1 时半透明）。"""
@@ -1086,6 +1565,25 @@ class App(object):
         render.draw_lines(self.base, shown, self.fonts, box.x + pad, y,
                           line_h, base_size=base)
 
+        # 第 3 期：对话框右下角的「重听」小按钮（这句有语音才出现）。
+        # 只在能推进的状态下显示，别在选项 / 询问时挡住点击热区。
+        self.replay_rect = None
+        if self.state == ADVANCE and getattr(self.audio, "last_voice", ""):
+            r = pygame.Rect(box.right - 86, box.bottom - 42, 66, 26)
+            mouse = self._to_base(pygame.mouse.get_pos())
+            lay = pygame.Surface(r.size, pygame.SRCALPHA)
+            hot = r.collidepoint(mouse)
+            a = 150 if hot else 96
+            lay.fill((255, 255, 255, a))
+            self.base.blit(lay, r)
+            pygame.draw.rect(self.base, (255, 255, 255, 60), r, 1, border_radius=13)
+            f = self.fonts.get(13)
+            # text_color 默认是 None（表示「用 markdown 里的颜色」），按钮得自己兜个底色
+            t = f.render("重听 V", True, u["text_color"] or (30, 30, 40))
+            self.base.blit(t, (r.centerx - t.get_width() // 2,
+                               r.centery - t.get_height() // 2))
+            self.replay_rect = r
+
     def draw_choices(self):
         """画选择支：先压暗整屏，再画各个选项按钮（鼠标悬停高亮）。"""
         dim = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
@@ -1124,7 +1622,21 @@ class App(object):
         caret = "_" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
         t = f.render(self.input_text + caret, True, (30, 30, 45))
         self.base.blit(t, (field.x + 10, field.centery - t.get_height() // 2))
-        hint = self.fonts.get(15).render("输入后按回车确认", True, (140, 140, 160))
+        # 第 3 期：出错时红字顶掉底部的「回车确认」，正常时顺带说明这一格收什么
+        if self.q_error:
+            hint = self.fonts.get(15).render(self.q_error, True, (200, 70, 80))
+        else:
+            extra = ""
+            if self.qtype == "int":
+                extra = "只收整数"
+            elif self.qtype == "num":
+                extra = "只收数字"
+            if self.qmin is not None or self.qmax is not None:
+                lo = "" if self.qmin is None else ("%g" % self.qmin)
+                hi = "" if self.qmax is None else ("%g" % self.qmax)
+                extra += "（%s ~ %s）" % (lo or "…", hi or "…")
+            text = "输入后按回车确认" + (" · " + extra if extra else "")
+            hint = self.fonts.get(15).render(text, True, (140, 140, 160))
         self.base.blit(hint, (box.x + 18, box.bottom - 26))
 
     def draw_menu(self):
@@ -1171,6 +1683,7 @@ class App(object):
                       self.toggle_typewriter),
                      ("字体：%s" % (self.settings.font_name or "剧本默认"),
                       self.cycle_font),
+                     ("按键设置", self.open_keybind),
                      ("BGM 音量 %d%%" % int(self.settings.vol["bgm"] * 100),
                       lambda: self.cycle_vol("bgm")),
                      ("音效音量 %d%%" % int(self.settings.vol["se"] * 100),
@@ -1182,11 +1695,11 @@ class App(object):
                       self.toggle_fullscreen),
                      ("返回游戏", self._back),
                      ("回到标题", self._to_title)]
-            y = panel.y + 70
+            y = panel.y + 62
             for label, act in items:
                 self.buttons.append(render.Button(
-                    pygame.Rect(panel.x + 40, y, panel.width - 80, 32), label, act))
-                y += 34
+                    pygame.Rect(panel.x + 40, y, panel.width - 80, 30), label, act))
+                y += 32
         self.draw_buttons(18)
 
     def _back(self):

@@ -174,6 +174,15 @@ class Runtime(object):
         # CG 回廊：看过的背景 / 叠图，跨会话持久化（供标题界面的回廊展示）
         self.seen_cg = savemod.load_cg(self.root, self.script.title)
 
+        # 全局持久化（第 3 期）：跨周目 / 跨存档的玩家进度。
+        # 挂在 STM.PERSIST 上，剧本里直接读 STM.PERSIST["key"]；
+        # 写入用 S.persist("key", 值)（会立刻落盘，读档不会回滚）。
+        self.persist = savemod.load_persist(self.root, self.script.title)
+        self.STM.PERSIST = self.persist
+
+        # 当前所在的标签名（调试覆盖层用；普通流程无副作用）
+        self.cur_label = ""
+
     # ------------------------------------------------------------------ #
     # 求值
     # ------------------------------------------------------------------ #
@@ -228,11 +237,15 @@ class Runtime(object):
     # ------------------------------------------------------------------ #
     # 主循环
     # ------------------------------------------------------------------ #
-    def run(self, replay=None):
+    def run(self, replay=None, start=0):
         self._replay = list(replay or [])
         self._replay_i = 0
         body = self.script.body
-        i = 0
+        # start：从语句树第几条开始（章节选择用）。越界自动夹回 0，老调用不传即可。
+        try:
+            i = max(0, min(int(start), len(body)))
+        except (TypeError, ValueError):
+            i = 0
         try:
             while True:
                 try:
@@ -322,10 +335,33 @@ class Runtime(object):
                     self.STM.Q = prompt
                 ev = {"t": "question", "prompt": self.STM.Q or "请输入",
                       "line": s["line"]}
+                # 输入类型 / 校验（第 3 期）：剧本里写
+                #   SET STM.QTYPE = "int"    只收整数
+                #   SET STM.QTYPE = "num"    收数字（可带小数）
+                #   SET STM.QMAXLEN = 12     最长 12 个字符
+                #   SET STM.QMIN = 1 / QMAX = 99
+                # 不写就是原来的纯文本行为，老剧本完全不受影响。
+                qtype = str(getattr(self.STM, "QTYPE", "") or "text").lower()
+                if qtype in ("number", "float", "int32"):
+                    qtype = "num"
+                if qtype not in ("int", "num"):
+                    qtype = "text"
+                ev["qtype"] = qtype
+                for src, dst, cast in (("QMIN", "qmin", float),
+                                       ("QMAX", "qmax", float),
+                                       ("QMAXLEN", "qmaxlen", int)):
+                    val = getattr(self.STM, src, None)
+                    if val is None:
+                        continue
+                    try:
+                        ev[dst] = cast(float(val))
+                    except (TypeError, ValueError):
+                        pass
                 ans = self._take_answer()
                 if ans is None:
                     ans = yield ev
                     self.answers.append(("question", ans))
+                ans = self._coerce_answer(ans, qtype)
                 self.STM.ANSWER = ans
                 self.vars["STM.ANSWER"] = ans
 
@@ -339,6 +375,8 @@ class Runtime(object):
                                               s.get("kwargs") or {})
 
             elif k == "label":
+                # 记下当前标签，调试覆盖层会显示「现在跑到哪一节」
+                self.cur_label = s.get("name", "")
                 continue
 
             elif k == "return":
@@ -518,6 +556,71 @@ class Runtime(object):
             elif method == "avg_clear":
                 # S.AVG-clear()：把 AVG 画的所有东西一次擦干净
                 yield {"t": "avg", "action": "clear"}
+            elif method == "camera":
+                # ---- 镜头演出（第 3 期）----
+                #   S.camera(shake=8, dur=0.4)     震屏（幅度像素，越震越弱）
+                #   S.camera(zoom=1.2, dur=0.5)    推近 / 拉远（目标值会保持）
+                #   S.camera(zoom=1)               复位
+                #   S.camera(pan="right", dur=0.5) 平移（left/right/up/down/center）
+                # 都是副作用事件：不挡剧情推进，gui 每帧按 dur 插值。
+                ev = {"t": "camera", "dur": 0.4}
+                try:
+                    if "dur" in kw and kw["dur"] is not None:
+                        ev["dur"] = max(0.0, float(self.eval_expr(str(kw["dur"]))))
+                except STMFatal:
+                    pass
+                if "shake" in kw:
+                    ev["mode"] = "shake"
+                    try:
+                        ev["amp"] = abs(float(self.eval_expr(str(kw["shake"]))))
+                    except STMFatal:
+                        ev["amp"] = 8.0
+                elif "zoom" in kw:
+                    ev["mode"] = "zoom"
+                    try:
+                        ev["zoom"] = max(0.05, float(self.eval_expr(str(kw["zoom"]))))
+                    except STMFatal:
+                        ev["zoom"] = 1.0
+                elif "pan" in kw:
+                    ev["mode"] = "pan"
+                    d = str(kw["pan"]).strip().lower()
+                    dx = -0.2 if d in ("left", "左") else 0.2 if d in ("right", "右") else 0.0
+                    dy = -0.2 if d in ("up", "上") else 0.2 if d in ("down", "下") else 0.0
+                    if d in ("center", "中", "reset", "复位"):
+                        dx = dy = 0.0
+                    ev["dx"], ev["dy"] = dx, dy
+                else:
+                    ev["mode"] = "shake"
+                    ev["amp"] = 8.0
+                yield ev
+            elif method == "wait":
+                # S.wait(2) / S.wait(dur=1.5)：停一会儿再往下（不挡点击跳过）
+                raw = kw.get("dur", a0 if a0 != "" else 1.0)
+                try:
+                    d = max(0.0, float(self.eval_expr(str(raw))))
+                except STMFatal:
+                    d = 1.0
+                yield {"t": "wait", "dur": d}
+            elif method == "persist":
+                # ---- 全局持久化写入（第 3 期）----
+                #   S.persist("route_a", true)   写一个键（立刻落盘）
+                #   S.persist("route_a")         只读：结果放进 STM.PERSIST_VAL
+                # 读也可以用表达式：STM.PERSIST["route_a"]
+                key = str(a0 or "").strip()
+                if not key:
+                    if self.dev_mode:
+                        yield {"t": "toast", "text": "S.persist 需要给一个键名"}
+                    return
+                if len(args) >= 2:
+                    try:
+                        val = self.eval_expr(str(args[1]))
+                    except STMFatal:
+                        val = args[1]
+                    self.persist[key] = val
+                    self.STM.PERSIST = self.persist
+                    savemod.save_persist(self.root, self.script.title, self.persist)
+                    return
+                self.STM.PERSIST_VAL = self.persist.get(key)
             elif method == "jump":
                 if a0 in self._labels:
                     raise JumpSignal(self._labels[a0] + 1)
@@ -786,10 +889,37 @@ class Runtime(object):
         return strip_quotes(raw)
 
     def _assign(self, name, value):
+        # SET STM.PERSIST = {...}：整体覆盖持久化数据并立刻落盘
+        # （单个键的写入推荐用 S.persist("key", 值)，更直观）
+        if name.upper() == "STM.PERSIST":
+            if isinstance(value, dict):
+                self.persist.clear()
+                self.persist.update(value)
+                self.STM.PERSIST = self.persist
+                savemod.save_persist(self.root, self.script.title, self.persist)
+            return
         if name.upper().startswith("STM."):
             setattr(self.STM, name.split(".", 1)[1], value)
             return
         self.vars[name] = value
+
+    def _coerce_answer(self, ans, qtype):
+        """按输入的 qtype 把玩家答案转成数字。
+
+        校验（拒绝非法输入）在界面层做；这里只做「能转就转」的兜底，
+        所以无头跑（--auto）传进来一个非数字也不会让剧情崩，只是保留原字符串。
+        """
+        if qtype == "int":
+            try:
+                return int(float(str(ans).strip()))
+            except (TypeError, ValueError):
+                return ans
+        if qtype == "num":
+            try:
+                return float(str(ans).strip())
+            except (TypeError, ValueError):
+                return ans
+        return ans
 
     def _rand_draw(self, a, b):
         """回放感知随机：正常跑抽一枚记下，回放时吃记录原样返回。

@@ -54,7 +54,10 @@ Question:
 ## 目录
 
 - [特性](#特性)
+- [安装](#安装)
+- [第一个游戏（5 分钟）](#第一个游戏5-分钟)
 - [快速开始](#快速开始)
+- [使用示例](#使用示例)
 - [语法速查](#语法速查)
 - [完整语法手册](#完整语法手册)
 - [AVG 绘图](#avg-绘图savg-button-set-名字)
@@ -64,9 +67,13 @@ Question:
 - [自定义界面与引擎](#自定义界面与引擎)
 - [美化包（mod）](#美化包mod换主题)
 - [打包发布](#打包发布)
+- [发布为 HTML](#发布为-html)
+- [在线制作器（webmaker）](#在线制作器webmaker)
+- [转换成 Ren'Py](#转换成-renpy)
 - [关于加密](#关于加密重要)
 - [已知限制](#已知限制)
 - [常见问题](#常见问题)
+- [贡献指南](#贡献指南)
 - [许可](#许可)
 
 ---
@@ -115,35 +122,218 @@ Question:
 - **调试覆盖层** —— 开发模式按 `F3`：当前标签、变量表、已选项、persist、镜头状态一眼全看到
 - **语音重听** —— `V` 键，或者点对话框右下角的「重听」小按钮
 - **美化包在线装** —— 启动器「美化包 → 在线美化包」，从索引里挑一个，下载 + 校验 + 落地一气呵成
-- **测试与 CI** —— `tests/` 下 36 条 pytest；GitHub Actions 双平台跑测试 + 剧本检查 + 无头跑通
+- **测试与 CI** —— `tests/` 下 41 条 pytest；GitHub Actions 双平台跑测试 + 剧本检查 + 无头跑通
+
+---
+
+## 安装
+
+### 系统要求
+
+| 项目 | 要求 |
+|---|---|
+| Python | **3.8 及以上**（CI 用 3.12 跑全量测试） |
+| 系统 | Windows 10+ / macOS 10.13+ / 主流 Linux 桌面 |
+| 显卡 | 能跑 pygame 2D 即可，不需要独显 |
+| 音频 | 可选。没有声卡也能跑，只是没声音 |
+
+引擎本体只依赖 `pygame`；图形启动器另外依赖 `customtkinter`。两者互不依赖——
+引擎坏了启动器照样能开，反过来也一样。
+
+### 三步装完
+
+```bash
+# 1. 拿代码
+git clone https://github.com/ciallo0721-cmd/STMG.git
+cd STMG
+
+# 2. 建虚拟环境（强烈建议，别装进系统 Python）
+python -m venv .venv
+
+# 3. 装依赖
+# Windows
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+# macOS / Linux
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+下载慢就换镜像：
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+```
+
+装完直接开启动器：
+
+```bat
+STMG启动器.bat
+```
+
+```bash
+# macOS / Linux
+.venv/bin/python launcher.py
+```
+
+### 验证安装
+
+> 下文用 `python` 指代虚拟环境里的解释器。没激活 venv 的话，Windows 换成
+> `.venv\Scripts\python.exe`，macOS / Linux 换成 `.venv/bin/python`。
+
+```bash
+python start.py --check demo/script.stm   # 应输出「语法检查通过，没有发现问题。」
+python start.py --auto  demo/script.stm   # 无头跑一遍，打印全部台词
+python start.py                           # 不带参数 = 开窗口跑 demo
+```
+
+前两条必须过；第三条需要桌面环境，纯服务器上跳过它，改跑
+`python tools/selftest.py`（80 多项端到端自检：解析 → 推进 → 加解密 → 资源包 →
+界面 → 项目管理）。
+
+### 各平台补充
+
+**Windows**
+
+- 双击 `STMG启动器.bat` 最省事：缺 CustomTkinter 它会自动装
+- 路径带空格或中文不影响，批处理都用 `%~dp0`
+- 提示「不是内部或外部命令」= Python 没进 PATH，把安装目录和 `Scripts` 加进去
+
+**macOS**
+
+- 首次启动 pygame 可能被 Gatekeeper 拦，去「系统设置 → 隐私与安全性」放行
+- 不需要 Homebrew，`venv` 是标准库
+
+**Linux**
+
+- 启动器缺 tkinter：`sudo apt install python3-tk`（Fedora：`sudo dnf install python3-tkinter`）
+- pygame 报音频 / 显示初始化失败：装 SDL2 运行库（各发行版包名不同，通常是
+  `libsdl2-2.0-0`、`libsdl2-mixer-2.0-0` 一类）
+- 纯服务器 / CI 没有显示器，跑无头命令前先设：
+  `export SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`
+
+### 安装常见问题
+
+| 现象 | 原因与处理 |
+|---|---|
+| `No module named 'pygame'` | 用错解释器了。确认是 `.venv` 里那个，而不是系统的 `python` |
+| `No module named 'customtkinter'` | 只有启动器需要，`pip install customtkinter` 即可，不影响跑游戏 |
+| pip 卡在下载 pygame | 换镜像；或加 `--only-binary :all:` 强制用预编译轮子 |
+| 启动器打不开 / 白屏 | Linux 缺 `python3-tk`；Windows 用 `python launcher.py` 看真实报错 |
+| 游戏能开但没声音 | 检查系统音频设备；Linux 确认 SDL_mixer 已装 |
+
+### 升级
+
+```bash
+git pull
+.venv/bin/python -m pip install -r requirements.txt   # 依赖有变动时才需要
+```
+
+引擎没有安装步骤，也不写注册表。想彻底卸载，删掉整个文件夹就行；玩家存档在
+项目目录的 `.stmg_save/` 里，跟着项目走。
+
+---
+
+## 第一个游戏（5 分钟）
+
+### 1. 建项目
+
+两种方式，选一个：
+
+- **启动器**：双击 `STMG启动器.bat` → 「新建项目」→ 填名字。会生成一份能直接跑的模板
+  （变量、选择支、输入示例都在里面）
+- **手动**：在 `projects/` 下新建文件夹，放一个 `script.stm` 就行（引擎只认这个文件名）
+
+新建出来的目录：
+
+```
+projects/我的游戏/
+├── script.stm        主剧本
+├── options.stm       标题 / 加密口令 / 打包规则
+├── start.py          项目自己的启动入口
+├── start.bat         双击就跑
+├── stmg/             引擎源码（项目专属，随便改）
+├── custom/
+│   ├── gui.py        对话框位置、名字框颜色、标题图……
+│   └── markdown.py   自定义内联标记
+├── bg/               背景图
+├── png/              立绘、贴图
+├── music/            BGM / 音效 / 语音
+└── gui/              按钮、文本框贴图（可选）
+```
+
+素材按目录放，剧本里写相对路径（`bg/room.png`）即可。**没图也能跑**，引擎会画占位块。
+
+### 2. 写第一段剧情
+
+把下面整段粘进 `script.stm`：
+
+```stm
+<
+Size=1280x720
+title="我的第一个游戏"
+Font="Microsoft YaHei"
+>
+<
+Start:
+S.character("小菲")
+S.cg("bg/room.png")
+
+"天亮了。"
+小菲"早上好呀。"
+
+SET 好感度 = 0
+
+Choose:
+    "打招呼":"装睡"
+
+If "打招呼":
+    小菲"哦，醒了？"
+    SET 好感度 = 好感度 + 10
+Else:
+    小菲"……还在睡。"
+
+If 好感度 >= 10:
+    小菲"今天心情不错。"
+Else:
+    小菲"……"
+>
+<
+"感谢游玩"
+>
+```
+
+必须知道的几点：
+
+- 三个 `< >` 块按顺序是：头部 / 正文 / 结局（结局块可省）
+- 缩进 4 格 = 进入上一层分支，`If` 的范围也靠缩进判定
+- 头部字段全是可选的，只留一对空的 `< >` 也能跑
+- `**粗体**`、`[color=#ff88bb]文字[/color]` 这类标记写在台词里会直接渲染
+
+### 3. 检查 + 运行
+
+```bash
+python start.py --check projects/我的游戏/script.stm   # 先查语法
+python start.py projects/我的游戏/script.stm           # 开窗口
+python start.py --auto projects/我的游戏/script.stm    # 不开窗口，打印全部台词
+```
+
+语法错了不会在命令行刷红字：游戏窗口照常打开，显示错误界面（行号 + 级别 + 原因 +
+修复建议），改完再开。批量检查用 `--check`。
+
+### 4. 发布
+
+```bash
+python stmenc/start.py   projects/我的游戏   # 加密发布包 → dist/
+python tools/htmlpub.py  projects/我的游戏   # 网页版 → dist/我的游戏_web/
+python tools/stm2renpy.py projects/我的游戏  # 转 Ren'Py → dist/我的游戏_renpy/
+```
+
+启动器里对应的按钮是「打包发布 / 发布为 HTML / 转为 Ren'Py」。三者的产物结构见后面对应章节。
 
 ---
 
 ## 快速开始
 
-需要 Python 3.8 或更高版本。
-
-```bash
-git clone https://github.com/ciallo0721-cmd/STMG.git
-cd STMG
-python -m venv .venv
-```
-
-Windows：
-
-```bat
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-STMG启动器.bat
-```
-
-macOS / Linux：
-
-```bash
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python launcher.py
-```
-
-Linux 上如果提示缺 `tkinter`，装一下：`sudo apt install python3-tk`。
+上面的安装步骤走完，这里是最短的日常使用路径。
 
 ### 用启动器
 
@@ -185,6 +375,42 @@ start.bat projects\我的游戏\script.stm
 .venv\Scripts\python.exe start.py demo\script.stm --no-mod   :: 这次不用美化包
 ```
 
+### 在 Python 里调用（无头）
+
+引擎的解析和推进层不碰 pygame，可以直接嵌进自己的工具里——批量跑剧本、
+自动生成台词表、给 CI 做回归，都用这个姿势：
+
+```python
+from stmg import parser, options as optmod
+from stmg.session import Session
+
+path = "demo/script.stm"
+script = parser.parse_file(path)
+opts = optmod.load_options(optmod.find_options(path))
+
+# dev_mode=False = 发布版规则：禁用 STM.python，按 options.stm 的 AllowNet 决定联网
+sess = Session(script, opts, dev_mode=False)
+
+while True:
+    blk = sess.block
+    t = blk["t"]
+    if t == "say":
+        print((blk.get("who") + "：") if blk.get("who") else "", blk.get("text"))
+        sess.next_block()
+    elif t == "choose":
+        sess.answer(blk["options"][0])      # 永远选第一个
+    elif t == "question":
+        sess.answer("测试")
+    elif t in ("transition", "wait"):
+        sess.next_block()                   # 演出 / 等待不阻塞批处理
+        continue
+    else:
+        break                               # 剧本结束，或 fatal
+```
+
+无头模式不渲染画面、不播声音，只产出事件流。`Session.block` 是当前等待玩家的那一个
+事件，`next_block()` / `answer()` 推进。完整实现见 `start.py:88` 的 `run_auto()`。
+
 ### 操作
 
 | 操作 | 按键 |
@@ -203,6 +429,136 @@ start.bat projects\我的游戏\script.stm
 > 除了 `Esc` / `F3` / `空格` / `回车` 这几个保底键，其余都能在「设置 → 按键设置」里改。
 
 > `demo/` 是故意不放素材的示例，跑来跑去都是占位块——那是正常的，不是 bug。
+
+---
+
+## 使用示例
+
+下面每段都能直接粘进 `script.stm` 跑。按需求抄，不用从头读语法手册。
+
+### 例 1：最小对话
+
+```stm
+<
+Start:
+S.character("小菲")
+"雨停了。"
+小菲"走吧。"
+>
+```
+
+`S.character("小菲")` 只传名字 = 注册角色；传一个像图片路径的字符串 = 显示立绘。
+
+### 例 2：变量与条件分支
+
+```stm
+SET 好感度 = 0
+"她看了你一眼。"
+SET 好感度 = 好感度 + 10
+
+If 好感度 >= 10:
+    "她的态度软了一点。"
+Else:
+    "她没理你。"
+```
+
+变量名可以用中文。第一次出现必须 `SET`，之后直接用。
+
+### 例 3：两个立绘同框，带补间
+
+```stm
+S.cg("bg/教室.png", dur=0.6)
+S.character("png/小菲.png", pos="left",  tag="小菲", dur=0.4)
+S.character("png/小皮.png", pos="right", tag="小皮", dur=0.4)
+
+小菲"介绍一下，这是小皮。"
+S.hide("小皮")
+```
+
+`tag` 是身份，`hide` 按 tag 找人；不写 `tag` 默认用文件名。`dur` 不写就是瞬切。
+
+### 例 4：选项决定结局
+
+```stm
+Choose:
+    "跟她走":"留下"
+
+If "跟她走":
+    S.jump("好结局")
+
+"你留在了原地。"
+S.end()
+
+好结局:
+"你们一起走了。"
+S.end()
+```
+
+`If "选项名"` 判断的是「玩家有没有选过这个选项」，不是变量。标签段落要写在
+`S.end()` 之后，避免主流程顺路执行过去；标签段自己也要记得收尾。
+
+### 例 5：BGM / 音效 / 语音
+
+```stm
+S.play("music/theme.mp3")           <-- 默认循环
+S.sound("music/door.wav")           <-- 音效，不会打断 BGM
+S.voice("voice/小菲/0001.wav")      <-- 这一句的配音
+S.stop("bgm")
+```
+
+开了 AutoVoice 就不用逐句写 `S.voice`，见「语音自动挂载」。
+
+### 例 6：问玩家名字并用在台词里
+
+```stm
+STM.Q = "你叫什么名字？"
+Question:
+
+"你好，**" + STM.ANSWER + "**。"
+```
+
+提示文字写在 `STM.Q`，答案在 `STM.ANSWER`。带 `+` 或 `STM.` 的台词才按表达式求值，
+其余一律当纯文本。
+
+### 例 7：把长剧本拆开
+
+```stm
+<
+Start:
+"序章。"
+include "chapter1.stm"
+"终章。"
+>
+```
+
+`include` 是解析期正文内联，路径相对当前文件。**公共段落必须写在主流程走不到的末尾**，
+否则会被顺路执行——这条踩过的人最多。
+
+### 例 8：跨周目记忆
+
+```stm
+S.persist("看过真结局")            <-- 只读，结果放进 STM.PERSIST_VAL
+If STM.PERSIST_VAL:
+    "你之前见过这一幕。"
+Else:
+    "第一次来吧。"
+
+S.persist("看过真结局", 1)         <-- 写入，立刻落盘
+```
+
+存档记的是「这一周目的进度」，`persist` 记的是「玩家这个人的记忆」，关游戏也在。
+注意别直接写 `STM.PERSIST["键"]` 去判断一个可能不存在的键——会抛 `KeyError`；
+要么先 `S.persist("键")` 读进 `STM.PERSIST_VAL`，要么用 `STM.PERSIST.get("键")`。
+
+### 例 9：发布前跑一遍网页版自检
+
+```bash
+python tools/htmlpub.py projects/我的游戏
+# 浏览器打开 dist/我的游戏_web/index.html，地址后加 ?selftest=1
+```
+
+标题界面底部会打印事件流。开头的 `[wasm]` 表示真 Python 引擎跑在 WebAssembly 里，
+`[js]` 表示退回了内置解释器。
 
 ---
 
@@ -1436,34 +1792,139 @@ A：支持。`SET 好感度 = 0` 完全合法。
 
 ---
 
-## 参与开发
+## 贡献指南
 
-欢迎提 Issue 和 PR。
+欢迎 Issue 和 PR。这个项目的目标是「剧本简单、引擎透明」，所以改动也按这个原则来：
+**能改剧本解决的别改引擎，能改配置解决的别加语法。**
 
-改引擎之前建议先跑这两组：
+### 1. 先花十分钟熟悉结构
 
-```bash
-python -m pytest tests -q          # 单测，秒级，改完先跑这个
-python tools/selftest.py           # 端到端自检（解析 → 推进 → 打包 → 界面）
+```
+stmg/parser.py     .stm → 语句树      （只做语法，不执行）
+stmg/runtime.py    语句树 → 事件流    （求值、分支、变量、持久化）
+stmg/session.py    事件流 → 当前画面  （推进、存读档）
+stmg/gui.py        pygame 主循环      （输入、界面、演出）
+stmg/render.py     排版、文本框、转场
+stmg/uiconf.py     界面默认值（所有可配置项都在 DEFAULTS 里）
 ```
 
-`tests/` 分五块，哪块挂了基本就知道改坏了什么：
+前三个文件**不 import pygame**，这是硬约束：它保证引擎能无头跑，也保证测试跑得快。
+细节见 `STMG开发教程.md`。
+
+### 2. 装开发依赖
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+# macOS / Linux
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+`requirements-dev.txt` = 运行依赖 + `pytest`，没有别的工具链。
+
+### 3. 提交前跑这四条
+
+```bash
+python -m compileall -q stmg tools stmenc launcher.py start.py   # 抓半成品 / 缩进错
+python -m pytest tests -q                                       # 单测，秒级
+python tools/check.py demo --verbose                            # 剧本语法
+python start.py --auto demo/script.stm                          # 无头跑通
+```
+
+这四条和 CI 完全一致。本地全绿再推，别让红叉替你做检查。
+
+想更彻底一点：`python tools/selftest.py`（80 多项端到端自检）。
+
+### 4. 分支与提交信息
+
+- 从 `main` 切分支：`feat/章节选择`、`fix/读档丢变量`、`docs/安装说明`
+- 一个 PR 只做一件事。顺手重排格式、改无关文件、升级依赖，都会让 review 变难
+- 提交信息用 `<类型>: <一句话>`：
+
+```
+feat: 新增 S.camera 镜头演出
+fix: 修复 include 循环包含时递归过深
+docs: 补 Linux 安装依赖说明
+test: 补 While 循环 10000 次上限用例
+refactor: 把存档序列化抽到 session
+```
+
+### 5. 代码约定
+
+| 约定 | 说明 |
+|---|---|
+| Python 3.8 兼容 | 别用 `match`、`X \| Y` 类型标注、`str.removeprefix` 等 3.9+ 语法 |
+| 核心层不碰 pygame | `parser` / `runtime` / `session` 必须能无头跑；渲染和输入留在 `gui` / `render` |
+| 优先标准库 | 新依赖要有充分理由。加密、打包、zip 都是纯标准库实现的 |
+| 错误要分级 | 新错误走 `stmg/errors.py` 的级别体系，别 `print` 完就 `sys.exit` |
+| 不静默失败 | 能降级就降级并在开发模式给出提示；不能降级就进游戏内错误界面 |
+| 中文注释 | 解释「为什么这么做」，不复述代码 |
+| 兼容老剧本 | 新语法必须是增量；老 `.stm` 和新存档不能因为改动而跑不起来 |
+
+### 6. 加一条新语法
+
+按这个顺序改，少一步就会出现「能解析但不执行」或「执行了但读档卡住」：
+
+1. `stmg/parser.py`：识别关键字，产出语句节点，登记错误级别与修复建议
+2. `stmg/runtime.py`：实现执行逻辑，产出事件
+3. `stmg/session.py`：副作用型事件要加进 `SIDE_EFFECTS`，否则会变成「要等玩家点一下」
+4. `stmg/gui.py` / `stmg/render.py`：画面与输入；需要进存档就补 `snapshot` / `restore`
+5. `demo/script.stm`：补一个能跑通的用例
+6. `tests/test_runtime.py`（或 `test_parser.py`）：补断言，保证以后别改坏
+7. `README.md`：语法速查 + 完整语法手册同步更新
+
+只改视觉表现（转场、界面参数）的，走 `stmg/render.py` + `custom/gui.py`，别动解析器。
+
+### 7. 加转场 / 改界面
+
+- **内置转场**：在 `stmg/render.py` 的 `draw_transition()` 里加分支，并在 README 的转场表补一行
+- **自定义转场**：属于用户项目，放 `custom/transitions.py`，不进引擎
+- **界面参数**：加到 `stmg/uiconf.py` 的 `DEFAULTS`，写清注释和默认值，`custom/gui.py` 自动就能用
+- **美化包**：只能声明 `CONFIG`，不允许执行代码、带引擎、发请求——三条硬限制见「美化包」章节
+
+### 8. 测试都管什么
+
+`tests/` 分六块，哪块挂了基本就知道改坏了什么：
 
 | 文件 | 管什么 |
 |---|---|
 | `test_parser.py` | 语法树结构：If/Else、嵌套、include、Call/Return |
 | `test_runtime.py` | 条件求值、persist 持久化、提问校验、镜头 / 转场 / wait 事件 |
+| `test_session.py` | 读档重放不能在副作用 / 演出事件上停住 |
 | `test_render.py` | 每个内置转场都不崩、自定义转场能加载、坏的自定义会回落 |
 | `test_mod.py` | 美化包：索引、安装、sha256、zip 越界、可执行文件拦截 |
 | `test_gui_smoke.py` | 无头建窗口，把调试层 / 章节 / 按键设置 / 镜头 / 重听各画一帧 |
 
-加新语法的话，顺手在 `demo/script.stm` 里补一个用例，再在 `tests/test_runtime.py`
-加一条断言 —— 前者证明「能跑」，后者保证「以后别改坏」。
+加新功能时：`demo/script.stm` 的用例证明「能跑」，单测的断言保证「以后别改坏」，两者都要。
 
-推上去之后 GitHub Actions 会自动在 Ubuntu 和 Windows 上重跑一遍（`.github/workflows/ci.yml`）。
-`selftest.py` 在 CI 里是**参考项**（`continue-on-error`）：它有两项依赖本机环境
+### 9. PR 检查表
+
+- [ ] 四条命令本地全绿
+- [ ] 新功能有 demo 用例，新语法有单测
+- [ ] README / 相关文档已同步（改了语法却不改文档的 PR 会被打回）
+- [ ] 没有提交 `.venv/`、`dist/`、`stmg/pyodide/`、`projects/` 下的私人项目
+- [ ] 没有 `*.pyc`、编辑器临时文件、`*.bak`
+- [ ] PR 描述写清「改了什么 / 为什么 / 怎么验证」
+
+CI 会在 Ubuntu 和 Windows、Python 3.12 上重跑同样的命令（`.github/workflows/ci.yml`）。
+`tools/selftest.py` 是**参考项**（`continue-on-error`）：它有两项依赖本机环境
 （`projects/YandereContract2.0` 不在仓库里、Linux runner 不一定有 tkinter），
-红不红不代表代码坏了 —— 真正的硬门是 pytest + 语法检查 + 无头跑通。
+红不红不代表代码坏了。硬门是 `compileall` + `pytest` + 语法检查 + 无头跑通。
+
+### 10. 报 Issue 请带上
+
+```markdown
+**环境**：Windows 11 / Python 3.12 / STMG 1.0.0
+        （`python -c "import stmg; print(stmg.__version__)"`）
+**怎么跑**：`python start.py projects/xxx/script.stm`
+**期望**：点完选项进入第二章
+**实际**：窗口停在错误界面，报 xxx.stm:42
+**最小复现剧本**：10 行以内能复现的 .stm 片段
+**完整报错**：错误界面截图，或 `--auto` 的完整输出
+```
+
+没有最小复现的 Issue 通常修不动——先把剧本砍到能复现的最小片段，比贴一百行日志有用。
 
 ---
 
